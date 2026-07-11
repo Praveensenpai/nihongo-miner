@@ -43,17 +43,11 @@ $ uv sync
 
 ## ✦ usage
 
-Feed it a subtitle file, and let it mine.
+Just run the miner, and a beautiful GUI file picker will pop up to let you select your subtitle file.
 
 ```bash
-# run against a single file
-$ uv run python miner.py path/to/subtitles.srt
-
-# advanced usage
-$ uv run python miner.py path/to/subtitles.ass \
-    --known known.txt \
-    --freq freq.json \
-    --export mined_cards.csv
+# launch the app
+$ uv run python main.py
 ```
 
 ---
