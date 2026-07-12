@@ -2,7 +2,7 @@
 
 ## 1. Core Problem & Vision
 **Problem:** AJATT/Immersion learners waste hours manually hunting for $i+1$ (one unknown word/grammar point) sentences in anime subtitles.
-**Vision:** A standalone offline desktop application that analyzes subtitle files, compares them against the user's known vocabulary, and automatically recommends the absolute best sentences to mine as flashcards.
+**Vision:** A standalone offline CLI application that analyzes subtitle files, compares them against the user's known vocabulary, and automatically recommends the absolute best sentences to mine as flashcards.
 
 ---
 
@@ -21,7 +21,6 @@
 ## 3. Solving the Cold Start Problem
 When a brand new user opens the app, they have zero data. To calibrate them quickly:
 *   **Interactive Bootstrapping Grid:** Before candidates are generated, the app extracts the easiest 100 unknown words (sorted by frequency rank) present in the subtitle file. It renders them in a keyboard-driven, 2-column terminal checkbox grid (using raw terminal modes and `console.clear()` to prevent ghosting). The user navigates with Arrows, toggles with Space, and confirms with Enter to bulk-add them to the SQLite database.
-*   **The Anki Import:** Allow users to import an Anki `collection.anki2` file to instantly populate their known words database.
 
 ---
 
@@ -50,7 +49,7 @@ Once sentences are filtered down to $i+1$, they must be sorted so the most usefu
 ---
 
 ## 7. Tech Stack for the MVP
-If rebuilding or expanding this, stick to this fast, offline-first stack:
+If rebuilding or expanding this, stick to this fast, offline-first CLI stack:
 *   **Package Manager:** `uv`
 *   **Language:** Python (Strict Typing, OOP Design)
 *   **CLI Framework:** `typer` + `rich` (Terminal formatting and raw input terminal redirection)
