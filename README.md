@@ -21,6 +21,7 @@ Anime immersion is the best way to learn Japanese, but finding the perfect $i+1$
 ## ✦ features
 
 - **$i+1$ Filtering** ─ Automatically extracts sentences with exactly ONE unknown word.
+- **Interactive Known-Words Bootstrapping** ─ Select and bulk-add known words from the top 100 easiest words on startup (via a keyboard-driven terminal checkbox list).
 - **Smart NLP** ─ Powered by `SudachiPy`. Ignores particles, conjugations, and grammar filler.
 - **Anime Frequency Ranking** ─ Sorts candidate sentences based on anime word frequencies. 
 - **Offline Dictionary** ─ Integrated with `jamdict` for instant English definitions.

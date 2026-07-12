@@ -1,7 +1,8 @@
 import json
+from rich import print
 import urllib.request
 import urllib.error
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 class AnkiClient:
     """Client for communicating with Anki Desktop via AnkiConnect."""
@@ -23,7 +24,7 @@ class AnkiClient:
         try:
             with urllib.request.urlopen(req, timeout=2.0) as response:
                 response_data = json.load(response)
-        except urllib.error.URLError:
+        except (urllib.error.URLError, OSError):
             raise ConnectionError("Could not connect to Anki. Make sure Anki is open and AnkiConnect is installed.")
             
         if len(response_data) != 2:
@@ -52,9 +53,9 @@ class AnkiClient:
             if self.deck_name not in decks:
                 self._invoke("createDeck", deck=self.deck_name)
         except Exception as e:
-            print(f"Warning: Failed to ensure Anki deck exists: {e}")
+            print(f"[bold yellow]Warning:[/bold yellow] Failed to ensure Anki deck exists: {e}")
 
-    def add_card(self, sentence: str, target_word: str, reading: str, definition: str, audio_path: Optional[str] = None, image_path: Optional[str] = None) -> Optional[int]:
+    def add_card(self, sentence: str, target_word: str, reading: str, definition: str, audio_path: Optional[str] = None, image_path: Optional[str] = None, base_score: Optional[float] = None, adjusted_score: Optional[float] = None, known_words: Optional[str] = None, unknown_words: Optional[str] = None) -> Optional[int]:
         """Adds a mined flashcard to Anki. Returns the note ID on success, or None on failure."""
         front_html = f"<div><b>{target_word}</b>"
         if reading and reading != target_word:
@@ -68,7 +69,7 @@ class AnkiClient:
                 self._invoke("storeMediaFile", filename=filename, path=str(audio_path))
                 front_html += f"<br>[sound:{filename}]"
             except Exception as e:
-                print(f"Warning: Failed to upload audio: {e}")
+                print(f"[bold yellow]Warning:[/bold yellow] Failed to upload audio: {e}")
                 
         back_html = f"<div>{definition}</div>"
         if image_path:
@@ -78,7 +79,20 @@ class AnkiClient:
                 self._invoke("storeMediaFile", filename=filename, path=str(image_path))
                 back_html += f"<br><img src=\"{filename}\" style=\"max-height: 270px; max-width: 100%; height: auto;\">"
             except Exception as e:
-                print(f"Warning: Failed to upload image: {e}")
+                print(f"[bold yellow]Warning:[/bold yellow] Failed to upload image: {e}")
+                
+        stats_html = "<br><hr><div style=\"text-align: left; font-size: 0.8em; color: #888;\">"
+        if known_words:
+            stats_html += f"<b>Known words:</b> {known_words}<br>"
+        if unknown_words:
+            stats_html += f"<b>Unknown words:</b> {unknown_words}<br>"
+        if base_score is not None:
+            stats_html += f"<b>Base Score:</b> {base_score:.2f}<br>"
+        if adjusted_score is not None:
+            stats_html += f"<b>Adjusted Score:</b> {adjusted_score:.2f}<br>"
+        stats_html += "</div>"
+        
+        back_html += stats_html
         
         note = {
             "deckName": self.deck_name,
@@ -100,5 +114,5 @@ class AnkiClient:
         except Exception as e:
             if "duplicate" in str(e).lower():
                 return -2
-            print(f"Warning: Failed to add card to Anki: {e}")
+            print(f"[bold yellow]Warning:[/bold yellow] Failed to add card to Anki: {e}")
             return None

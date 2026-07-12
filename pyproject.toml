@@ -10,9 +10,10 @@ dependencies = [
     "jamdict>=0.1a11.post2",
     "jamdict-data>=1.5",
     "pyqt5>=5.15.11",
-    "questionary>=2.1.1",
+    "rich>=15.0.0",
     "selectolax>=0.4.10",
     "sqlmodel>=0.0.39",
     "sudachidict-core>=20260428",
     "sudachipy>=0.6.11",
+    "typer>=0.26.8",
 ]

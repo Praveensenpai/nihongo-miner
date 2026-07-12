@@ -1,5 +1,9 @@
-import argparse
-import csv
+import typer
+from rich import print
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.prompt import IntPrompt
 import dataclasses
 import json
 import pathlib
@@ -8,7 +12,6 @@ import subprocess
 import os
 from typing import Dict, Iterable, List, Sequence, Set, Tuple, Any
 
-import questionary
 from jamdict import Jamdict
 from sqlmodel import select
 from sudachipy import dictionary, tokenizer
@@ -16,6 +19,8 @@ from sudachipy import dictionary, tokenizer
 from src.database import KnownWord, FrequencyWord, MinedCard, get_session, create_db_and_tables
 from src.anki import AnkiClient
 from src.jpdb import scrape_jpdb, get_jpdb_global_rank, list_cached_jpdb
+
+app = typer.Typer(rich_markup_mode="rich")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -58,7 +63,7 @@ class SubtitleParser:
         lines: List[SubtitleLine] = []
         
         for block in blocks:
-            sub_lines = [l.strip() for l in block.split("\n") if l.strip()]
+            sub_lines = [line.strip() for line in block.split("\n") if line.strip()]
             if len(sub_lines) >= 3:
                 try:
                     idx = int(sub_lines[0])
@@ -199,7 +204,7 @@ class TextAnalyzer:
             return True
         if pos and pos[0] in self._ignored_pos:
             return True
-        if pos and len(pos) > 1 and pos[1] == "非自立可能":
+        if pos and len(pos) > 1 and pos[1] == "非自立可能" and pos[0] != "動詞":
             return True
         if pos and pos[0] == "接頭辞" and (
             lemma in self._ignored_prefixes or surface in self._ignored_prefixes
@@ -216,10 +221,18 @@ class TextAnalyzer:
 class KnowledgeModel:
     """Tracks words the user already knows using SQLite."""
     
-    def __init__(self) -> None:
-        with get_session() as session:
-            statement = select(KnownWord.word)
-            self.known_words: Set[str] = set(session.exec(statement).all())
+    def __init__(self, known_path: Any = None) -> None:
+        self.known_path = known_path
+        if known_path is not None:
+            self.known_words = set()
+            path = pathlib.Path(known_path)
+            if path.exists():
+                with open(path, "r", encoding="utf-8") as f:
+                    self.known_words = {line.strip() for line in f if line.strip()}
+        else:
+            with get_session() as session:
+                statement = select(KnownWord.word)
+                self.known_words: Set[str] = set(session.exec(statement).all())
 
     def is_known(self, word: str) -> bool:
         return word in self.known_words
@@ -236,22 +249,37 @@ class KnowledgeModel:
         if not new_words:
             return 0
 
-        with get_session() as session:
-            for word in new_words:
-                self.known_words.add(word)
-                session.add(KnownWord(word=word))
-            session.commit()
+        for word in new_words:
+            self.known_words.add(word)
+            
+        if self.known_path is not None:
+            with open(self.known_path, "a", encoding="utf-8") as f:
+                for word in new_words:
+                    f.write(f"{word}\n")
+        else:
+            with get_session() as session:
+                for word in new_words:
+                    session.add(KnownWord(word=word))
+                session.commit()
         return len(new_words)
 
 
 class WordFrequency:
     """Looks up frequency ranks for Japanese words using SQLite."""
     
-    def __init__(self) -> None:
-        with get_session() as session:
-            statement = select(FrequencyWord.word, FrequencyWord.rank)
-            results = session.exec(statement).all()
-            self.freq_map: Dict[str, int] = {word: rank for word, rank in results}
+    def __init__(self, freq_path: Any = None) -> None:
+        if freq_path is not None:
+            path = pathlib.Path(freq_path)
+            if path.exists():
+                with open(path, "r", encoding="utf-8") as f:
+                    self.freq_map = json.load(f)
+            else:
+                self.freq_map = {}
+        else:
+            with get_session() as session:
+                statement = select(FrequencyWord.word, FrequencyWord.rank)
+                results = session.exec(statement).all()
+                self.freq_map: Dict[str, int] = {word: rank for word, rank in results}
 
     def get_rank(self, word: str) -> int:
         # Default to a high rank (100000) for rare/unlisted words
@@ -312,19 +340,24 @@ class MiningEngine:
                 continue
 
             content_words = tuple(token.lemma for token in tokens)
-            unknown = _ordered_unique(
+            all_unknown = _ordered_unique(
                 word for word in content_words if not self.knowledge.is_known(word)
             )
             
-            # If JPDB is active, only show unknown words that exist in the JPDB list
+            # If JPDB is active, target words must be in the JPDB list.
+            # Otherwise, any unknown word in the sentence can be a target word.
             if self.jpdb_vocab:
-                unknown = [w for w in unknown if w in self.jpdb_vocab]
-            
-            # i+1 rule: exactly 1 unknown vocabulary word
-            if len(unknown) == 1:
-                target_word = unknown[0].strip()
+                target_words = [w for w in all_unknown if w in self.jpdb_vocab]
+            else:
+                target_words = all_unknown
+
+            for target_word in target_words:
+                target_word = target_word.strip()
                 if not target_word:
                     continue
+                
+                # Count other unknown words in the sentence (excluding target_word)
+                extra_unknown_count = len([w for w in all_unknown if w != target_word])
                 
                 if self.jpdb_vocab and target_word in self.jpdb_vocab:
                     rank = self.jpdb_vocab[target_word]["rank"]
@@ -333,9 +366,12 @@ class MiningEngine:
                     
                 ep_freq = episode_freq.get(target_word, 1)
                 
-                # We no longer strictly reject rank >= 100000. 
-                # Episode frequency can bump up unlisted/rare words.
-                score = self._calculate_score(tokens, rank, ep_freq)
+                score = self._calculate_score(
+                    tokens, 
+                    rank, 
+                    ep_freq=ep_freq, 
+                    extra_unknown_count=extra_unknown_count
+                )
                 
                 known_context_words = tuple(
                     _ordered_unique(
@@ -361,7 +397,13 @@ class MiningEngine:
         candidates.sort(key=lambda c: c.score, reverse=True)
         return candidates
 
-    def _calculate_score(self, tokens: Sequence[AnalyzedToken], rank: int, ep_freq: int) -> float:
+    def _calculate_score(
+        self,
+        tokens: Sequence[AnalyzedToken],
+        rank: int,
+        ep_freq: int = 1,
+        extra_unknown_count: int = 0,
+    ) -> float:
         # Global frequency score (0 to 100)
         if rank >= 100000:
             freq_score = -50.0  # Penalize missing/rare words, but let ep_freq overcome it
@@ -384,7 +426,10 @@ class MiningEngine:
             * 20.0
         )
             
-        return freq_score + ep_score - length_penalty - proper_noun_penalty
+        # Penalty for extra unknown words in the sentence (-250.0 per extra unknown word)
+        extra_unknown_penalty = extra_unknown_count * 250.0
+            
+        return freq_score + ep_score - length_penalty - proper_noun_penalty - extra_unknown_penalty
 
 
 class DictLookup:
@@ -444,6 +489,202 @@ class DictLookup:
             return f"Error looking up definition: {e}", ""
 
 
+def prompt_pre_add_known_words(
+    candidates: List[CandidateSentence],
+    knowledge: KnowledgeModel,
+    engine: MiningEngine,
+    lines: List[SubtitleLine]
+) -> List[CandidateSentence]:
+    # Collect all unique unknown words
+    all_unknown_set = set()
+    for cand in candidates:
+        all_unknown_set.add(cand.unknown_word)
+        for word in cand.content_words:
+            if not knowledge.is_known(word):
+                all_unknown_set.add(word)
+
+    if not all_unknown_set:
+        return candidates
+
+    # Get their frequency ranks
+    word_ranks = []
+    for word in all_unknown_set:
+        if engine.jpdb_vocab and word in engine.jpdb_vocab:
+            rank = engine.jpdb_vocab[word]["rank"]
+        else:
+            rank = engine.frequency.get_rank(word)
+        word_ranks.append((word, rank))
+
+    # Sort by rank ascending (easiest words first)
+    word_ranks.sort(key=lambda x: x[1])
+    top_easy_words = word_ranks[:100]
+
+    choices = [word for word, rank in top_easy_words]
+    ranks = [rank for word, rank in top_easy_words]
+
+    # Interactive selection
+    cursor = 0
+    scroll_offset = 0
+    selected = set()
+
+    import sys
+    import tty
+    import termios
+    import select
+    import os
+    from rich.console import Console
+    from rich.table import Table
+    from rich.console import Group
+    from rich.text import Text
+
+    def get_key():
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            rlist, _, _ = select.select([sys.stdin], [], [], 0.1)
+            if rlist:
+                seq = os.read(fd, 10)
+                if seq in (b'\x1b[A', b'\x1bOA'):
+                    return 'up'
+                elif seq in (b'\x1b[B', b'\x1bOB'):
+                    return 'down'
+                elif seq in (b'\x1b[D', b'\x1bOD'):
+                    return 'left'
+                elif seq in (b'\x1b[C', b'\x1bOC'):
+                    return 'right'
+                elif seq == b' ':
+                    return 'space'
+                elif seq in (b'\r', b'\n'):
+                    return 'enter'
+                elif seq in (b'q', b'Q', b'\x03', b'\x1b'):
+                    return 'quit'
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        return None
+
+    def draw_menu(console):
+        console.clear()
+        console.print("[bold yellow]Interactive Known Word Selection[/bold yellow]")
+        console.print("Use [cyan]Arrow Keys[/cyan] to navigate, [cyan]Space[/cyan] to toggle selection, [cyan]Enter[/cyan] to submit, [cyan]Q/Esc[/cyan] to skip.")
+        console.print()
+
+        table = Table(
+            title="[bold yellow]Pre-add Known Words (Interactive Selection)[/bold yellow]",
+            show_header=False,
+            show_edge=False,
+            box=None,
+            padding=(0, 2)
+        )
+        
+        num_cols = 2
+        for _ in range(num_cols):
+            table.add_column(justify="left")
+            
+        total_rows = (len(choices) + num_cols - 1) // num_cols
+        max_visible_rows = 10
+        
+        start_row = scroll_offset
+        end_row = min(total_rows, scroll_offset + max_visible_rows)
+        
+        for r in range(start_row, end_row):
+            row_data = []
+            for c in range(num_cols):
+                idx = r * num_cols + c
+                if idx < len(choices):
+                    word = choices[idx]
+                    rank = ranks[idx]
+                    rank_str = f"#{rank}" if rank < 100000 else "N/A"
+                    
+                    is_sel = idx in selected
+                    is_cur = idx == cursor
+                    
+                    prefix = "[magenta]▶[/magenta]" if is_cur else " "
+                    box = "[[bold green]x[/bold green]]" if is_sel else "[ ]"
+                    
+                    style = "bold green" if is_sel else "white"
+                    if is_cur:
+                        style = "bold cyan reverse"
+                    
+                    row_data.append(f"{prefix} {box} [{style}]{word}[/{style}] [dim]({rank_str})[/dim]")
+                else:
+                    row_data.append("")
+            table.add_row(*row_data)
+            
+        top_indicator = Text("   ▲  More words above  ▲", style="bold yellow") if scroll_offset > 0 else Text("")
+        bottom_indicator = Text("   ▼  More words below  ▼", style="bold yellow") if end_row < total_rows else Text("")
+        status_text = Text(f"   Showing words {start_row * num_cols + 1} - {min(len(choices), end_row * num_cols)} of {len(choices)}", style="dim cyan")
+        
+        group_elements = []
+        if scroll_offset > 0:
+            group_elements.append(top_indicator)
+        group_elements.append(table)
+        if end_row < total_rows:
+            group_elements.append(bottom_indicator)
+        group_elements.append(status_text)
+        
+        console.print(Group(*group_elements))
+
+    console = Console()
+    
+    # Hide cursor
+    sys.stdout.write("\x1b[?25l")
+    sys.stdout.flush()
+
+    try:
+        draw_menu(console)
+        while True:
+            key = get_key()
+            if key == 'quit':
+                selected.clear()
+                break
+            elif key == 'enter':
+                break
+            elif key == 'space':
+                if cursor in selected:
+                    selected.remove(cursor)
+                else:
+                    selected.add(cursor)
+                draw_menu(console)
+            elif key in ('up', 'down', 'left', 'right'):
+                if key == 'up':
+                    cursor = max(0, cursor - 2)
+                elif key == 'down':
+                    cursor = min(len(choices) - 1, cursor + 2)
+                elif key == 'left':
+                    cursor = max(0, cursor - 1)
+                elif key == 'right':
+                    cursor = min(len(choices) - 1, cursor + 1)
+                
+                # Update scroll offset
+                max_visible_rows = 10
+                cursor_row = cursor // 2
+                if cursor_row < scroll_offset:
+                    scroll_offset = cursor_row
+                elif cursor_row >= scroll_offset + max_visible_rows:
+                    scroll_offset = cursor_row - max_visible_rows + 1
+                    
+                draw_menu(console)
+    except (KeyboardInterrupt, SystemExit):
+        selected.clear()
+    finally:
+        # Show cursor
+        sys.stdout.write("\x1b[?25h")
+        sys.stdout.flush()
+        console.clear()
+
+    if selected:
+        newly_known = [choices[i] for i in selected]
+        added = knowledge.add_known_words(newly_known)
+        console.print(f"\n[bold green]Successfully added {added} word(s) directly to database: {', '.join(newly_known)}[/bold green]\n")
+        # Recalculate candidates
+        return engine.find_candidates(lines)
+    else:
+        console.print("\n[bold yellow]No words pre-added. Proceeding...[/bold yellow]\n")
+        
+    return candidates
+
+
 class CliApp:
     """Ties the logic together in a simple command-line interface."""
     
@@ -485,23 +726,39 @@ class CliApp:
         )
         
         try:
-            selected_name = questionary.select(
-                "Select subtitle file to mine:",
-                choices=choices,
-                default=default_choice
-            ).ask()
-            if selected_name:
-                return parent_dir / selected_name
-        except Exception:
+            default_num = choices.index(default_choice) + 1
+        except ValueError:
+            default_num = 1
+            
+        try:
+            console = Console()
+            console.print()
+            table = Table(title="[bold yellow]Available Subtitle Files[/bold yellow]", show_header=True, header_style="bold magenta")
+            table.add_column("No.", justify="right", style="cyan")
+            table.add_column("File Name", style="green")
+            
+            for idx, name in enumerate(choices, 1):
+                table.add_row(str(idx), name)
+                
+            console.print(table)
+            console.print()
+            
+            choice_num = IntPrompt.ask(
+                "Select subtitle file to mine", 
+                choices=[str(x) for x in range(1, len(choices) + 1)],
+                default=default_num
+            )
+            return parent_dir / choices[choice_num - 1]
+        except (KeyboardInterrupt, SystemExit):
             pass
             
         return self.subtitle_path
 
     def sync_unsynced_cards(self) -> None:
         with get_session() as session:
-            unsynced = session.exec(select(MinedCard).where(MinedCard.anki_note_id == None)).all()
+            unsynced = session.exec(select(MinedCard).where(MinedCard.anki_note_id is None)).all()
             if unsynced:
-                print(f"Found {len(unsynced)} unsynced cards. Syncing to Anki...")
+                print(f"[bold cyan]Found {len(unsynced)} unsynced cards. Syncing to Anki...[/bold cyan]")
                 synced_count = 0
                 for card in unsynced:
                     note_id = self.anki.add_card(
@@ -510,46 +767,55 @@ class CliApp:
                         card.reading,
                         card.definition,
                         audio_path=card.audio_path,
-                        image_path=card.image_path
+                        image_path=card.image_path,
+                        base_score=card.base_score,
+                        adjusted_score=card.adjusted_score,
+                        known_words=card.known_words,
+                        unknown_words=card.unknown_words,
                     )
                     if note_id:
                         card.anki_note_id = note_id
                         session.add(card)
                         synced_count += 1
                         if note_id == -2:
-                            print(f" -> '{card.target_word}' already exists in Anki. Marked as synced.")
+                            print(f"  [bold yellow]->[/bold yellow] '[bold green]{card.target_word}[/bold green]' already exists in Anki. Marked as synced.")
                         
                         # Delete local files if successfully synced
                         if card.audio_path and os.path.exists(card.audio_path):
                             try:
                                 os.remove(card.audio_path)
                             except Exception as e:
-                                print(f"Warning: Failed to delete local audio: {e}")
+                                print(f"[bold yellow]Warning:[/bold yellow] Failed to delete local audio: {e}")
                         if card.image_path and os.path.exists(card.image_path):
                             try:
                                 os.remove(card.image_path)
                             except Exception as e:
-                                print(f"Warning: Failed to delete local image: {e}")
+                                print(f"[bold yellow]Warning:[/bold yellow] Failed to delete local image: {e}")
                                 
                 if synced_count > 0:
                     session.commit()
-                    print(f" -> Successfully synced {synced_count} cards to Anki!")
+                    print(f"  [bold green]-> Successfully synced {synced_count} cards to Anki![/bold green]")
                 else:
-                    print(" -> Failed to sync cards to Anki (check connection).")
+                    print("  [bold red]-> Failed to sync cards to Anki (check connection).[/bold red]")
 
     def run(self) -> None:
-        print("=== AI-Assisted Sentence Miner MVP ===")
+        Console().print(Panel(
+            "[bold cyan]AI-Assisted Sentence Miner MVP[/bold cyan]",
+            title="[bold yellow]Welcome[/bold yellow]",
+            expand=False,
+            padding=(1, 4)
+        ))
         create_db_and_tables()
         if self.anki.is_running():
-            print("Connected to Anki (AnkiConnect detected).")
+            print("[bold green]Connected to Anki (AnkiConnect detected).[/bold green]")
             self.anki.create_deck_if_missing()
             self.sync_unsynced_cards()
         else:
-            print("Warning: Anki not detected. Cards will only save to local SQLite.")
+            print("[bold yellow]Warning:[/bold yellow] Anki not detected. Cards will only save to local SQLite.")
             
         if self.jpdb_url:
             try:
-                print(f"Fetching JPDB vocabulary list from {self.jpdb_url}...")
+                print(f"[bold cyan]Fetching JPDB vocabulary list from {self.jpdb_url}...[/bold cyan]")
                 jpdb_words = scrape_jpdb(self.jpdb_url)
                 if jpdb_words:
                     for entry in jpdb_words:
@@ -559,32 +825,32 @@ class CliApp:
                             "definition": entry["definition"],
                             "rank": rank
                         }
-                    print(f"Loaded {len(self.jpdb_vocab)} words from JPDB.")
+                    print(f"[bold green]Loaded {len(self.jpdb_vocab)} words from JPDB.[/bold green]")
                 else:
-                    print("Warning: No words fetched from JPDB. Falling back to local dictionary.")
+                    print("[bold yellow]Warning:[/bold yellow] No words fetched from JPDB. Falling back to local dictionary.")
             except Exception as e:
-                print(f"Warning: Failed to fetch JPDB vocab list: {e}. Falling back to local dictionary.")
+                print(f"[bold yellow]Warning:[/bold yellow] Failed to fetch JPDB vocab list: {e}. Falling back to local dictionary.")
 
         if self.video_path and self.video_path.exists():
             synced_path = self.subtitle_path.with_name(f"{self.subtitle_path.stem}_synced{self.subtitle_path.suffix}")
             if not synced_path.exists():
-                print(f"Synchronizing subtitles using ffsubsync...")
+                print("[bold cyan]Synchronizing subtitles using ffsubsync...[/bold cyan]")
                 try:
                     subprocess.run([
                         "ffs", str(self.video_path), 
                         "-i", str(self.subtitle_path), 
                         "-o", str(synced_path)
                     ], check=True)
-                    print(f"Subtitles synchronized: {synced_path.name}")
+                    print(f"[bold green]Subtitles synchronized:[/bold green] {synced_path.name}")
                     self.subtitle_path = synced_path
                 except Exception as e:
-                    print(f"Warning: Synchronization failed. {e}")
+                    print(f"[bold yellow]Warning:[/bold yellow] Synchronization failed. {e}")
             else:
-                print(f"Using already synchronized subtitles: {synced_path.name}")
+                print(f"[bold green]Using already synchronized subtitles:[/bold green] {synced_path.name}")
                 self.subtitle_path = synced_path
 
         if not self.subtitle_path.exists():
-            print(f"Error: Could not find '{self.subtitle_path}'. Please make sure the file exists.")
+            print(f"[bold red]Error: Could not find '{self.subtitle_path}'. Please make sure the file exists.[/bold red]")
             return
 
         parser = SubtitleParser()
@@ -597,18 +863,30 @@ class CliApp:
         
         candidates = engine.find_candidates(lines)
         if not candidates:
-            print("No i+1 sentences found.")
+            print("[bold yellow]No i+1 sentences found.[/bold yellow]")
             return
 
+        candidates = prompt_pre_add_known_words(candidates, knowledge, engine, lines)
+
         lookup = DictLookup()
-        print(f"Found {len(candidates)} candidate sentences.")
+        print(f"Found [bold cyan]{len(candidates)}[/bold cyan] candidate sentences.")
         print("-" * 50)
+
+        try:
+            target_mined = IntPrompt.ask(
+                "How many cards would you like to mine?",
+                choices=["10", "15", "20", "25"],
+                default=10
+            )
+        except (KeyboardInterrupt, SystemExit):
+            print("\n[bold red]Operation cancelled.[/bold red]")
+            return
 
         mined_count = 0
         
-        for idx, cand in enumerate(candidates[:50], 1):
-            if mined_count >= 10:
-                print("\n🎉 You've successfully mined 10 cards! Great session.")
+        for idx, cand in enumerate(candidates, 1):
+            if mined_count >= target_mined:
+                print(f"\n🎉 [bold green]You've successfully mined {target_mined} cards! Great session.[/bold green]")
                 break
                 
             if knowledge.is_known(cand.unknown_word):
@@ -621,28 +899,57 @@ class CliApp:
                     definition, _ = lookup.get_definition(cand.unknown_word)
             else:
                 definition, kana = lookup.get_definition(cand.unknown_word)
-
+ 
             display_word = f"{cand.unknown_word} ({kana})" if kana and kana != cand.unknown_word else cand.unknown_word
             
-            print(f"\nRANK #{idx}: {cand.sentence.text}")
-            print(f"-> Target Word: {display_word}")
-            if self.jpdb_vocab and cand.unknown_word in self.jpdb_vocab:
-                print(f"-> JPDB Frequency Rank: #{cand.freq_rank}")
-            else:
-                print(f"-> Frequency Rank: #{cand.freq_rank}")
-            print(f"-> Definition: {definition}")
-            print("-" * 50)
+            # Print candidate card details beautifully in a panel
+            extra_unknowns = _ordered_unique(
+                w for w in cand.content_words
+                if w != cand.unknown_word and w not in cand.known_context_words
+            )
+            penalty_applied = len(extra_unknowns) * 250.0
+            base_score = cand.score + penalty_applied
+            
+            known_words_str = ", ".join(cand.known_context_words) if cand.known_context_words else "None"
+            all_unknowns = [cand.unknown_word] + extra_unknowns
+            unknown_words_str = ", ".join(all_unknowns)
+            
+            freq_rank_label = "JPDB Frequency Rank" if (self.jpdb_vocab and cand.unknown_word in self.jpdb_vocab) else "Frequency Rank"
+            
+            card_info = (
+                f"[bold cyan]Sentence:[/bold cyan] {cand.sentence.text}\n"
+                f"[bold cyan]Target Word:[/bold cyan] [bold green]{display_word}[/bold green]\n"
+                f"[bold cyan]{freq_rank_label}:[/bold cyan] [bold yellow]#{cand.freq_rank}[/bold yellow]\n"
+                f"[bold cyan]Definition:[/bold cyan] {definition}\n"
+                f"[bold cyan]Known Words:[/bold cyan] {known_words_str}\n"
+                f"[bold cyan]Unknown Words:[/bold cyan] [bold red]{unknown_words_str}[/bold red]"
+            )
+            if extra_unknowns:
+                card_info += f"\n[bold cyan]Extra Unknowns:[/bold cyan] [bold yellow]{', '.join(extra_unknowns)}[/bold yellow] (Penalty: -{penalty_applied:.1f})"
+            
+            card_info += (
+                f"\n[bold cyan]Base Score:[/bold cyan] {base_score:.2f} | "
+                f"[bold cyan]Adjusted Score:[/bold cyan] [bold green]{cand.score:.2f}[/bold green]"
+            )
+            
+            Console().print(Panel(
+                card_info,
+                title=f"[bold yellow]RANK #{idx}[/bold yellow]",
+                expand=False,
+                padding=(1, 2)
+            ))
+            print()
             
             choice = input("Mine this card? (y/n/q to quit): ").strip().lower()
             if choice == "y":
                 added_count = self._mine_candidate(knowledge, cand, kana, definition)
                 mined_count += 1
                 print(
-                    f"Successfully mined and added {added_count} new known "
-                    f"word(s), including '{cand.unknown_word}'."
+                    f"[bold green]Successfully mined and added {added_count} new known "
+                    f"word(s), including '{cand.unknown_word}'.[/bold green]"
                 )
             elif choice == "q":
-                print("Exiting app.")
+                print("[bold yellow]Exiting app.[/bold yellow]")
                 break
 
     def _mine_candidate(
@@ -674,7 +981,7 @@ class CliApp:
                 audio_filename = f"{candidate.unknown_word}_{candidate.sentence.index}.mp3"
                 audio_path = str(media_dir / audio_filename)
                 if not os.path.exists(audio_path):
-                    print(f"Extracting audio to {audio_filename} in media/ folder...")
+                    print(f"  [bold cyan]->[/bold cyan] Extracting audio to [bold green]{audio_filename}[/bold green] in media/ folder...")
                     try:
                         (
                             ffmpeg
@@ -684,7 +991,7 @@ class CliApp:
                             .run(quiet=True)
                         )
                     except Exception as e:
-                        print(f"Warning: Failed to extract audio. {e}")
+                        print(f"[bold yellow]Warning:[/bold yellow] Failed to extract audio: {e}")
                         audio_path = None
                         
                 # Extract screenshot at midpoint
@@ -707,7 +1014,7 @@ class CliApp:
                     except Exception:
                         mid_sec = start_ts
                         
-                    print(f"Extracting screenshot to {image_filename}...")
+                    print(f"  [bold cyan]->[/bold cyan] Extracting screenshot to [bold green]{image_filename}[/bold green]...")
                     try:
                         (
                             ffmpeg
@@ -718,8 +1025,19 @@ class CliApp:
                             .run(quiet=True)
                         )
                     except Exception as e:
-                        print(f"Warning: Failed to extract screenshot. {e}")
+                        print(f"[bold yellow]Warning:[/bold yellow] Failed to extract screenshot: {e}")
                         image_path = None
+
+        extra_unknowns = _ordered_unique(
+            w for w in candidate.content_words
+            if w != candidate.unknown_word and w not in candidate.known_context_words
+        )
+        penalty_applied = len(extra_unknowns) * 250.0
+        base_score = candidate.score + penalty_applied
+        
+        known_words_str = ", ".join(candidate.known_context_words) if candidate.known_context_words else ""
+        all_unknowns = [candidate.unknown_word] + extra_unknowns
+        unknown_words_str = ", ".join(all_unknowns)
 
         self._export_card(
             candidate.sentence.text,
@@ -728,32 +1046,59 @@ class CliApp:
             definition,
             audio_path=audio_path,
             image_path=image_path,
+            base_score=base_score,
+            adjusted_score=candidate.score,
+            known_words=known_words_str,
+            unknown_words=unknown_words_str,
         )
         return added_count
 
-    def _export_card(self, sentence: str, word: str, reading: str, definition: str, audio_path: str | None = None, image_path: str | None = None) -> None:
+    def _export_card(
+        self,
+        sentence: str,
+        word: str,
+        reading: str,
+        definition: str,
+        audio_path: str | None = None,
+        image_path: str | None = None,
+        base_score: float | None = None,
+        adjusted_score: float | None = None,
+        known_words: str | None = None,
+        unknown_words: str | None = None,
+    ) -> None:
         anki_note_id = None
         if self.anki.is_running():
-            anki_note_id = self.anki.add_card(sentence, word, reading, definition, audio_path=audio_path, image_path=image_path)
+            anki_note_id = self.anki.add_card(
+                sentence,
+                word,
+                reading,
+                definition,
+                audio_path=audio_path,
+                image_path=image_path,
+                base_score=base_score,
+                adjusted_score=adjusted_score,
+                known_words=known_words,
+                unknown_words=unknown_words,
+            )
             if anki_note_id:
                 if anki_note_id == -2:
-                    print(" -> Card already exists in Anki. Marked as synced.")
+                    print("  [bold yellow]->[/bold yellow] Card already exists in Anki. Marked as synced.")
                 else:
-                    print(" -> Successfully synced card to Anki.")
+                    print("  [bold green]-> Successfully synced card to Anki.[/bold green]")
                 if audio_path and os.path.exists(audio_path):
                     try:
                         os.remove(audio_path)
                     except Exception as e:
-                        print(f"Warning: Failed to delete local audio: {e}")
+                        print(f"[bold yellow]Warning:[/bold yellow] Failed to delete local audio: {e}")
                 if image_path and os.path.exists(image_path):
                     try:
                         os.remove(image_path)
                     except Exception as e:
-                        print(f"Warning: Failed to delete local image: {e}")
+                        print(f"[bold yellow]Warning:[/bold yellow] Failed to delete local image: {e}")
             else:
-                print(" -> Failed to sync to Anki. Saved locally for later sync.")
+                print("  [bold red]-> Failed to sync to Anki. Saved locally for later sync.[/bold red]")
         else:
-            print(" -> Anki not running. Saved locally for later sync.")
+            print("  [bold yellow]-> Anki not running. Saved locally for later sync.[/bold yellow]")
 
         with get_session() as session:
             card = MinedCard(
@@ -764,6 +1109,10 @@ class CliApp:
                 anki_note_id=anki_note_id,
                 audio_path=audio_path,
                 image_path=image_path,
+                base_score=base_score,
+                adjusted_score=adjusted_score,
+                known_words=known_words,
+                unknown_words=unknown_words,
             )
             session.add(card)
             session.commit()
@@ -780,69 +1129,195 @@ def _ordered_unique(words: Iterable[str]) -> List[str]:
     return result
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Find i+1 Japanese subtitle sentences for Anki mining.",
+@app.command()
+def run_app(
+    stats: bool = typer.Option(
+        False, 
+        "--stats", 
+        help="Display the total number of known words and exit."
     )
-    return parser
-
-
-def main(argv: Sequence[str] | None = None) -> None:
-    args = build_arg_parser().parse_args(argv)
+) -> None:
+    if stats:
+        create_db_and_tables()
+        knowledge = KnowledgeModel()
+        count = len(knowledge.known_words)
+        
+        sorted_words = sorted(knowledge.known_words)
+        
+        console = Console()
+        
+        console.print()
+        console.print(Panel(
+            f"[bold cyan]You currently know [magenta]{count:,}[/magenta] words! Keep it up! 🚀[/bold cyan]",
+            title="[bold yellow]Vocabulary Stats[/bold yellow]",
+            expand=False,
+            padding=(1, 4)
+        ))
+        
+        if count > 0:
+            table = Table(show_header=False, show_edge=False, box=None, padding=(0, 2))
+            num_cols = 4
+            
+            for _ in range(num_cols):
+                table.add_column(justify="right", style="dim")
+                table.add_column(justify="left", style="bold green")
+                
+            for i in range(0, count, num_cols):
+                row_data = []
+                for j in range(num_cols):
+                    idx = i + j
+                    if idx < count:
+                        row_data.extend([f"{idx + 1}.", sorted_words[idx]])
+                    else:
+                        row_data.extend(["", ""])
+                table.add_row(*row_data)
+                
+            console.print("\n[bold]Your known words:[/bold]")
+            console.print(table)
+            
+        console.print()
+        return
     
     subtitle_path = ""
     video_path = ""
     
-    try:
-        from PyQt5.QtWidgets import QApplication, QFileDialog
-        
-        app = QApplication.instance()
-        if not app:
-            app = QApplication([])
+    session_file = pathlib.Path(".session_history.json")
+    loaded_session = False
+    history = []
+    
+    if session_file.exists():
+        try:
+            with open(session_file, "r", encoding="utf-8") as f:
+                history = json.load(f)
+                if not isinstance(history, list):
+                    history = []
+        except Exception as e:
+            print(f"[bold yellow]Warning:[/bold yellow] Failed to load session history: {e}")
             
-        print("Please select a subtitle file (.srt, .ass, .ssa)...")
-        subtitle_path, _ = QFileDialog.getOpenFileName(
-            None,
-            "Select Subtitle File",
-            "",
-            "Subtitle Files (*.srt *.ass *.ssa);;All Files (*)"
-        )
+    valid_sessions = []
+    invalid_found = False
+    for sess in history:
+        sub = sess.get("subtitle_path")
+        vid = sess.get("video_path")
+        sub_exists = sub and pathlib.Path(sub).exists()
+        vid_exists = not vid or pathlib.Path(vid).exists()
+        if sub_exists and vid_exists:
+            valid_sessions.append(sess)
+        else:
+            invalid_found = True
+            
+    if invalid_found and not valid_sessions:
+        print("[bold yellow]Warning:[/bold yellow] Past sessions exist, but all paths are now invalid.")
         
-        if not subtitle_path:
-            print("No subtitle file selected. Exiting.")
+    if valid_sessions:
+        console = Console()
+        console.print()
+        
+        table = Table(title="[bold yellow]Recent Sessions[/bold yellow]", show_header=True, header_style="bold magenta")
+        table.add_column("No.", justify="right", style="cyan")
+        table.add_column("Subtitle File", style="green")
+        table.add_column("Video File", style="dim")
+        
+        for idx, sess in enumerate(valid_sessions, 1):
+            sub_name = pathlib.Path(sess["subtitle_path"]).name
+            vid_name = pathlib.Path(sess["video_path"]).name if sess.get("video_path") else "None"
+            table.add_row(str(idx), sub_name, vid_name)
+            
+        new_sess_num = len(valid_sessions) + 1
+        table.add_row(str(new_sess_num), "[bold yellow]Start a new session[/bold yellow]", "")
+        
+        console.print(table)
+        console.print()
+        
+        try:
+            choice_num = IntPrompt.ask(
+                "Select an option", 
+                choices=[str(x) for x in range(1, new_sess_num + 1)],
+                default=1
+            )
+            
+            if choice_num != new_sess_num:
+                selected_sess = valid_sessions[choice_num - 1]
+                subtitle_path = selected_sess["subtitle_path"]
+                video_path = selected_sess.get("video_path") or ""
+                loaded_session = True
+                
+                # Move this session to the top (MRU)
+                history.remove(selected_sess)
+                history.insert(0, selected_sess)
+                with open(session_file, "w", encoding="utf-8") as f:
+                    json.dump(history, f, ensure_ascii=False, indent=2)
+        except (KeyboardInterrupt, SystemExit):
+            print("\n[bold red]Operation cancelled.[/bold red]")
             return
+
+    if not loaded_session:
+        try:
+            from PyQt5.QtWidgets import QApplication, QFileDialog
             
-        print("Please select a video file (optional) for sync & audio extraction...")
-        video_path, _ = QFileDialog.getOpenFileName(
-            None,
-            "Select Video File (Cancel to skip)",
-            "",
-            "Video Files (*.mkv *.mp4 *.avi);;All Files (*)"
-        )
-        
-    except Exception as e:
-        print(f"PyQt5 dialog failed or not available, falling back to Tkinter. Error: {e}")
-        import tkinter as tk
-        from tkinter import filedialog
-        
-        root = tk.Tk()
-        root.withdraw() # Hide the main window
-        
-        print("Please select a subtitle file (.srt, .ass, .ssa)...")
-        subtitle_path = filedialog.askopenfilename(
-            title="Select Subtitle File",
-            filetypes=[("Subtitle Files", "*.srt *.ass *.ssa"), ("All Files", "*.*")]
-        )
-        
-        if not subtitle_path:
-            print("No subtitle file selected. Exiting.")
-            return
+            app = QApplication.instance()
+            if not app:
+                app = QApplication([])
+                
+            print("Please select a subtitle file (.srt, .ass, .ssa)...")
+            subtitle_path, _ = QFileDialog.getOpenFileName(
+                None,
+                "Select Subtitle File",
+                "",
+                "Subtitle Files (*.srt *.ass *.ssa);;All Files (*)"
+            )
             
-        print("Please select a video file (optional) for sync & audio extraction...")
-        video_path = filedialog.askopenfilename(
-            title="Select Video File (Cancel to skip)",
-            filetypes=[("Video Files", "*.mkv *.mp4 *.avi"), ("All Files", "*.*")]
-        )
+            if not subtitle_path:
+                print("No subtitle file selected. Exiting.")
+                return
+                
+            print("Please select a video file (optional) for sync & audio extraction...")
+            video_path, _ = QFileDialog.getOpenFileName(
+                None,
+                "Select Video File (Cancel to skip)",
+                "",
+                "Video Files (*.mkv *.mp4 *.avi);;All Files (*)"
+            )
+            
+        except Exception as e:
+            print(f"PyQt5 dialog failed or not available, falling back to Tkinter. Error: {e}")
+            import tkinter as tk
+            from tkinter import filedialog
+            
+            root = tk.Tk()
+            root.withdraw() # Hide the main window
+            
+            print("Please select a subtitle file (.srt, .ass, .ssa)...")
+            subtitle_path = filedialog.askopenfilename(
+                title="Select Subtitle File",
+                filetypes=[("Subtitle Files", "*.srt *.ass *.ssa"), ("All Files", "*.*")]
+            )
+            
+            if not subtitle_path:
+                print("No subtitle file selected. Exiting.")
+                return
+                
+            print("Please select a video file (optional) for sync & audio extraction...")
+            video_path = filedialog.askopenfilename(
+                title="Select Video File (Cancel to skip)",
+                filetypes=[("Video Files", "*.mkv *.mp4 *.avi"), ("All Files", "*.*")]
+            )
+            
+        # Save session history
+        if subtitle_path:
+            new_sess = {
+                "subtitle_path": str(pathlib.Path(subtitle_path).absolute()),
+                "video_path": str(pathlib.Path(video_path).absolute()) if video_path else ""
+            }
+            # Remove any matching duplicate to re-insert at front
+            history = [h for h in history if h.get("subtitle_path") != new_sess["subtitle_path"]]
+            history.insert(0, new_sess)
+            history = history[:10]
+            try:
+                with open(session_file, "w", encoding="utf-8") as f:
+                    json.dump(history, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                print(f"[bold yellow]Warning:[/bold yellow] Failed to save session history: {e}")
         
     # JPDB prompt: offer cached lists first, then new URL or skip
     jpdb_url = None
@@ -858,11 +1333,31 @@ def main(argv: Sequence[str] | None = None) -> None:
             choices.append(f"{label}  ({e['count']} words)")
         choices += [_NEW_URL, _SKIP]
 
-        print("\nDo you want to use a JPDB vocabulary list?")
-        selection = questionary.select(
-            "Select a cached list or enter a new URL:",
-            choices=choices,
-        ).ask()
+        console = Console()
+        console.print()
+        table = Table(title="[bold yellow]JPDB Vocabulary Lists[/bold yellow]", show_header=True, header_style="bold magenta")
+        table.add_column("No.", justify="right", style="cyan")
+        table.add_column("List Options", style="green")
+        
+        for idx, choice in enumerate(choices, 1):
+            if choice in (_NEW_URL, _SKIP):
+                table.add_row(str(idx), f"[bold yellow]{choice}[/bold yellow]")
+            else:
+                table.add_row(str(idx), choice)
+                
+        console.print(table)
+        console.print()
+        
+        try:
+            choice_num = IntPrompt.ask(
+                "Select a JPDB option",
+                choices=[str(x) for x in range(1, len(choices) + 1)],
+                default=len(choices)  # Default to skip
+            )
+            selection = choices[choice_num - 1]
+        except (KeyboardInterrupt, SystemExit):
+            print("\n[bold red]Operation cancelled.[/bold red]")
+            return
 
         if selection and selection not in (_NEW_URL, _SKIP):
             idx = choices.index(selection)
@@ -874,8 +1369,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         print("\nDo you want to filter and define words using a JPDB vocabulary list?")
         jpdb_url = input("Enter JPDB vocabulary list URL (optional, press Enter to skip): ").strip() or None
 
-    app = CliApp(subtitle_path, video_path, jpdb_url=jpdb_url)
-    app.run()
+    cli_app = CliApp(subtitle_path, video_path, jpdb_url=jpdb_url)
+    cli_app.run()
+
+
+def main() -> None:
+    app()
 
 
 if __name__ == "__main__":

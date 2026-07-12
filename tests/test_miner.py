@@ -1,9 +1,16 @@
-import csv
 import pathlib
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 
-from miner import (
+from sqlmodel import create_engine, select
+import src.database
+
+# Redirect database to in-memory SQLite for testing
+src.database.engine = create_engine("sqlite://")
+src.database.create_db_and_tables()
+
+from miner import (  # noqa: E402
     AnalyzedToken,
     CandidateSentence,
     CliApp,
@@ -13,7 +20,7 @@ from miner import (
     SubtitleParser,
     TextAnalyzer,
     WordFrequency,
-    build_arg_parser,
+    app,
 )
 
 
@@ -127,10 +134,12 @@ class MinerTests(unittest.TestCase):
                 ]
             )
 
-        self.assertEqual([candidate.sentence.index for candidate in candidates], [2, 3])
+        # Candidates now include index 4 (sentence with two unknown words, targeting "見る")
+        self.assertEqual([candidate.sentence.index for candidate in candidates], [2, 4])
         self.assertEqual(candidates[0].unknown_word, "飲む")
         self.assertEqual(candidates[0].content_words, ("学校", "茶", "飲む"))
         self.assertEqual(candidates[0].known_context_words, ("学校", "茶"))
+        self.assertEqual(candidates[1].unknown_word, "見る")
 
     def test_score_uses_token_length_and_proper_noun_penalty(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -149,33 +158,33 @@ class MinerTests(unittest.TestCase):
                 1000,
             )
 
-        self.assertEqual(short_score, 8.0)
-        self.assertEqual(proper_noun_score, 5.0)
+        self.assertEqual(short_score, 98.0)
+        self.assertEqual(proper_noun_score, 78.0)
 
-    def test_csv_export_uses_csv_escaping(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            export_path = pathlib.Path(tmpdir) / "cards.csv"
-            app = CliApp("unused.srt", "unused-known.txt", "unused-freq.json", str(export_path))
+    @patch("src.anki.AnkiClient.is_running", return_value=False)
+    def test_db_export_saves_to_database(self, mock_is_running: MagicMock) -> None:
+        app = CliApp("unused.srt")
+        # Clear mined cards table for this test
+        with src.database.get_session() as session:
+            session.exec(src.database.SQLModel.metadata.tables["minedcard"].delete())  # type: ignore[name-defined]
+            session.commit()
 
-            app._export_card('彼は"茶,水"を飲む。', "飲む", "drink, imbibe")
+        app._export_card('彼は"茶,水"を飲む。', "飲む", "drink", "drink, imbibe")
 
-            with open(export_path, "r", encoding="utf-8", newline="") as f:
-                rows = list(csv.reader(f))
+        with src.database.get_session() as session:
+            cards = session.exec(select(src.database.MinedCard)).all()
 
-        self.assertEqual(
-            rows,
-            [
-                ["Sentence", "Word", "Definition"],
-                ['彼は"茶,水"を飲む。', "飲む", "drink, imbibe"],
-            ],
-        )
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0].sentence, '彼は"茶,水"を飲む。')
+        self.assertEqual(cards[0].target_word, "飲む")
+        self.assertEqual(cards[0].definition, "drink, imbibe")
 
-    def test_mining_candidate_marks_context_and_target_known(self) -> None:
+    @patch("src.anki.AnkiClient.is_running", return_value=False)
+    def test_mining_candidate_marks_context_and_target_known(self, mock_is_running: MagicMock) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             known_path = pathlib.Path(tmpdir) / "known.txt"
-            export_path = pathlib.Path(tmpdir) / "cards.csv"
             knowledge = KnowledgeModel(known_path)
-            app = CliApp("unused.srt", str(known_path), "unused-freq.json", str(export_path))
+            app = CliApp("unused.srt")
             candidate = CandidateSentence(
                 sentence=SubtitleLine(1, "", "学校で茶を飲む。"),
                 content_words=("学校", "茶", "飲む"),
@@ -185,43 +194,49 @@ class MinerTests(unittest.TestCase):
                 score=8.58,
             )
 
-            added_count = app._mine_candidate(knowledge, candidate, "drink")
+            added_count = app._mine_candidate(knowledge, candidate, "drink", "to drink")
 
         self.assertEqual(added_count, 3)
         self.assertEqual(knowledge.known_words, {"学校", "茶", "飲む"})
 
     def test_sample_file_produces_expected_candidate(self) -> None:
-        parser = SubtitleParser()
-        lines = parser.parse(pathlib.Path("sample.srt"))
-        engine = MiningEngine(
-            TextAnalyzer(),
-            KnowledgeModel(pathlib.Path("known.txt")),
-            WordFrequency(pathlib.Path("freq.json")),
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sample_path = pathlib.Path(tmpdir) / "sample.srt"
+            known_path = pathlib.Path(tmpdir) / "known.txt"
+            freq_path = pathlib.Path(tmpdir) / "freq.json"
 
-        candidates = engine.find_candidates(lines)
+            sample_path.write_text(
+                "1\n"
+                "00:00:01,000 --> 00:00:03,000\n"
+                "学校に行く。\n\n"
+                "2\n"
+                "00:00:04,000 --> 00:00:06,000\n"
+                "お茶を飲む。\n\n",
+                encoding="utf-8",
+            )
+            known_path.write_text("学校\n茶\n", encoding="utf-8")
+            freq_path.write_text('{"飲む": 420, "行く": 1000}', encoding="utf-8")
+
+            parser = SubtitleParser()
+            lines = parser.parse(sample_path)
+            engine = MiningEngine(
+                TextAnalyzer(),
+                KnowledgeModel(known_path),
+                WordFrequency(freq_path),
+            )
+
+            candidates = engine.find_candidates(lines)
 
         self.assertGreaterEqual(len(candidates), 1)
         self.assertEqual(candidates[0].sentence.index, 2)
         self.assertEqual(candidates[0].unknown_word, "飲む")
 
-    def test_cli_parser_accepts_subtitle_and_data_paths(self) -> None:
-        args = build_arg_parser().parse_args(
-            [
-                "subs/episode 01.ass",
-                "--known",
-                "profile-known.txt",
-                "--freq",
-                "anime-freq.json",
-                "--export",
-                "cards.csv",
-            ]
-        )
-
-        self.assertEqual(args.subtitle_path, "subs/episode 01.ass")
-        self.assertEqual(args.known, "profile-known.txt")
-        self.assertEqual(args.freq, "anime-freq.json")
-        self.assertEqual(args.export, "cards.csv")
+    def test_cli_parser_is_empty(self) -> None:
+        from typer.testing import CliRunner
+        runner = CliRunner()
+        result = runner.invoke(app, ["--help"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("--stats", result.stdout)
 
 
 if __name__ == "__main__":

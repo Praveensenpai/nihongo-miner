@@ -28,6 +28,10 @@ class MinedCard(SQLModel, table=True):
     anki_note_id: Optional[int] = Field(default=None, index=True)
     audio_path: Optional[str] = Field(default=None)
     image_path: Optional[str] = Field(default=None)
+    base_score: Optional[float] = Field(default=None)
+    adjusted_score: Optional[float] = Field(default=None)
+    known_words: Optional[str] = Field(default=None)
+    unknown_words: Optional[str] = Field(default=None)
 
 DB_FILE = pathlib.Path("data.db")
 sqlite_url = f"sqlite:///{DB_FILE.absolute()}"
