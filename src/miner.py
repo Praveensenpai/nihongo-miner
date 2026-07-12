@@ -17,7 +17,7 @@ from jamdict import Jamdict
 from sqlmodel import select
 from sudachipy import dictionary, tokenizer
 
-from src.database import KnownWord, FrequencyWord, MinedCard, get_session, create_db_and_tables
+from src.database import KnownWord, FrequencyWord, MinedCard, MiningSession, get_session, create_db_and_tables
 from src.anki import AnkiClient
 from src.jpdb import scrape_jpdb, get_jpdb_global_rank, list_cached_jpdb
 from src.jotoba import get_pitch_accent
@@ -1613,18 +1613,11 @@ def run_app(
     subtitle_path = ""
     video_path = ""
     
-    session_file = pathlib.Path(".session_history.json")
     loaded_session = False
-    history = []
     
-    if session_file.exists():
-        try:
-            with open(session_file, "r", encoding="utf-8") as f:
-                history = json.load(f)
-                if not isinstance(history, list):
-                    history = []
-        except Exception as e:
-            print(f"[bold yellow]Warning:[/bold yellow] Failed to load session history: {e}")
+    with get_session() as session:
+        db_history = session.exec(select(MiningSession).order_by(MiningSession.id.desc())).all()
+        history = [{"id": h.id, "subtitle_path": h.subtitle_path, "video_path": h.video_path} for h in db_history]
             
     valid_sessions = []
     invalid_found = False
@@ -1675,10 +1668,13 @@ def run_app(
                 loaded_session = True
                 
                 # Move this session to the top (MRU)
-                history.remove(selected_sess)
-                history.insert(0, selected_sess)
-                with open(session_file, "w", encoding="utf-8") as f:
-                    json.dump(history, f, ensure_ascii=False, indent=2)
+                with get_session() as session:
+                    db_sess = session.get(MiningSession, selected_sess["id"])
+                    if db_sess:
+                        session.delete(db_sess)
+                        new_db_sess = MiningSession(subtitle_path=subtitle_path, video_path=video_path)
+                        session.add(new_db_sess)
+                        session.commit()
         except (KeyboardInterrupt, SystemExit):
             print("\n[bold red]Operation cancelled.[/bold red]")
             return
@@ -1737,19 +1733,24 @@ def run_app(
             
         # Save session history
         if subtitle_path:
-            new_sess = {
-                "subtitle_path": str(pathlib.Path(subtitle_path).absolute()),
-                "video_path": str(pathlib.Path(video_path).absolute()) if video_path else ""
-            }
-            # Remove any matching duplicate to re-insert at front
-            history = [h for h in history if h.get("subtitle_path") != new_sess["subtitle_path"]]
-            history.insert(0, new_sess)
-            history = history[:10]
-            try:
-                with open(session_file, "w", encoding="utf-8") as f:
-                    json.dump(history, f, ensure_ascii=False, indent=2)
-            except Exception as e:
-                print(f"[bold yellow]Warning:[/bold yellow] Failed to save session history: {e}")
+            abs_sub = str(pathlib.Path(subtitle_path).absolute())
+            abs_vid = str(pathlib.Path(video_path).absolute()) if video_path else ""
+            with get_session() as session:
+                # Remove any matching duplicate to re-insert at front
+                old_sess = session.exec(select(MiningSession).where(MiningSession.subtitle_path == abs_sub)).first()
+                if old_sess:
+                    session.delete(old_sess)
+                
+                new_db_sess = MiningSession(subtitle_path=abs_sub, video_path=abs_vid)
+                session.add(new_db_sess)
+                session.commit()
+                
+                # Keep only last 10
+                all_sessions = session.exec(select(MiningSession).order_by(MiningSession.id.desc())).all()
+                if len(all_sessions) > 10:
+                    for s in all_sessions[10:]:
+                        session.delete(s)
+                    session.commit()
         
     # JPDB prompt: offer cached lists first, then new URL or skip
     jpdb_url = None

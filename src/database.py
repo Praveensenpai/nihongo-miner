@@ -33,6 +33,12 @@ class MinedCard(SQLModel, table=True):
     known_words: Optional[str] = Field(default=None)
     unknown_words: Optional[str] = Field(default=None)
 
+class MiningSession(SQLModel, table=True):
+    """Saved history of mined subtitle and video files."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    subtitle_path: str = Field(index=True)
+    video_path: str = Field(default="")
+    
 DB_FILE = pathlib.Path("data.db")
 sqlite_url = f"sqlite:///{DB_FILE.absolute()}"
 
