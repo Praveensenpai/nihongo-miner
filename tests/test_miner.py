@@ -14,6 +14,7 @@ from miner import (  # noqa: E402
     AnalyzedToken,
     CandidateSentence,
     CliApp,
+    DictLookup,
     KnowledgeModel,
     MiningEngine,
     SubtitleLine,
@@ -230,6 +231,18 @@ class MinerTests(unittest.TestCase):
         self.assertGreaterEqual(len(candidates), 1)
         self.assertEqual(candidates[0].sentence.index, 2)
         self.assertEqual(candidates[0].unknown_word, "飲む")
+
+    def test_grammar_pattern_rules(self) -> None:
+        analyzer = TextAnalyzer()
+        tokens = analyzer.extract_content_tokens("お弁当を食べてしまう。")
+        lemmas = [token.lemma for token in tokens]
+        self.assertIn("食べる", lemmas)
+        self.assertIn("〜てしまう", lemmas)
+
+        lookup = DictLookup()
+        def_text, reading = lookup.get_definition("〜てしまう")
+        self.assertIn("to end up doing", def_text)
+        self.assertEqual(reading, "てしまう")
 
     def test_cli_parser_is_empty(self) -> None:
         from typer.testing import CliRunner

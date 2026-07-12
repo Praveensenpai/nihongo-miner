@@ -23,6 +23,121 @@ from src.jpdb import scrape_jpdb, get_jpdb_global_rank, list_cached_jpdb
 app = typer.Typer(rich_markup_mode="rich")
 
 
+GRAMMAR_DICT: Dict[str, Dict[str, str]] = {
+    "〜てしまう": {
+        "definition": "to end up doing (something/accidentally/regretfully); to complete thoroughly",
+        "reading": "てしまう"
+    },
+    "〜てみる": {
+        "definition": "to try doing (something); to attempt",
+        "reading": "てみる"
+    },
+    "〜てください": {
+        "definition": "please do (polite request)",
+        "reading": "てください"
+    },
+    "〜たことがある": {
+        "definition": "to have the experience of doing (something) in the past",
+        "reading": "たことがある"
+    },
+    "〜やすい": {
+        "definition": "easy to do; simple to; likely to",
+        "reading": "やすい"
+    },
+    "〜にくい": {
+        "definition": "hard to do; difficult to; unlikely to",
+        "reading": "にくい"
+    }
+}
+
+
+def detect_grammar_patterns(tokens: Sequence[Any]) -> List[Tuple[int, int, str]]:
+    """
+    Scans a list of raw SudachiPy tokens.
+    Returns a list of tuples: (start_index, end_index, pattern_display_form)
+    indices are inclusive of the matched tokens range in the raw list.
+    """
+    matches = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        # 1. 〜たことがある (past verb + ことが ある/あった)
+        # Sequence: [Verb] + [た/だ] + [こと] + [が/も/は] + [ある/あった]
+        if i + 4 < n:
+            t0, t1, t2, t3, t4 = tokens[i], tokens[i+1], tokens[i+2], tokens[i+3], tokens[i+4]
+            t0_pos = t0.part_of_speech()[0]
+            t1_lemma = t1.dictionary_form()
+            t2_lemma = t2.dictionary_form()
+            t3_pos = t3.part_of_speech()[0]
+            t4_lemma = t4.dictionary_form()
+            if (t0_pos == "動詞" and 
+                t1_lemma in ("た", "だ") and 
+                t2_lemma == "こと" and 
+                t3_pos == "助詞" and 
+                t4_lemma == "ある"):
+                matches.append((i, i + 4, "〜たことがある"))
+                i += 5
+                continue
+
+        # 2. 〜てください
+        # Sequence: [Verb] + [て/で] + [くださる/ください]
+        if i + 2 < n:
+            t0, t1, t2 = tokens[i], tokens[i+1], tokens[i+2]
+            t0_pos = t0.part_of_speech()[0]
+            t1_lemma = t1.dictionary_form()
+            t2_lemma = t2.dictionary_form()
+            if (t0_pos == "動詞" and 
+                t1_lemma in ("て", "で") and 
+                t2_lemma in ("くださる", "ください")):
+                matches.append((i, i + 2, "〜てください"))
+                i += 3
+                continue
+
+        # 3. 〜てしまう
+        # Sequence: [Verb] + [て/で] + [しまう]
+        if i + 2 < n:
+            t0, t1, t2 = tokens[i], tokens[i+1], tokens[i+2]
+            t0_pos = t0.part_of_speech()[0]
+            t1_lemma = t1.dictionary_form()
+            t2_lemma = t2.dictionary_form()
+            if (t0_pos == "動詞" and 
+                t1_lemma in ("て", "で") and 
+                t2_lemma == "しまう"):
+                matches.append((i, i + 2, "〜てしまう"))
+                i += 3
+                continue
+
+        # 4. 〜てみる
+        # Sequence: [Verb] + [て/で] + [みる]
+        if i + 2 < n:
+            t0, t1, t2 = tokens[i], tokens[i+1], tokens[i+2]
+            t0_pos = t0.part_of_speech()[0]
+            t1_lemma = t1.dictionary_form()
+            t2_lemma = t2.dictionary_form()
+            t2_pos = t2.part_of_speech()[0]
+            if (t0_pos == "動詞" and 
+                t1_lemma in ("て", "で") and 
+                t2_lemma == "みる" and 
+                t2_pos == "動詞"):
+                matches.append((i, i + 2, "〜てみる"))
+                i += 3
+                continue
+
+        # 5. 〜やすい / 〜にくい
+        # Sequence: [Verb] + [やすい/にくい]
+        if i + 1 < n:
+            t0, t1 = tokens[i], tokens[i+1]
+            t0_pos = t0.part_of_speech()[0]
+            t1_lemma = t1.dictionary_form()
+            if t0_pos == "動詞" and t1_lemma in ("やすい", "にくい"):
+                matches.append((i, i + 1, f"〜{t1_lemma}"))
+                i += 2
+                continue
+
+        i += 1
+    return matches
+
+
 @dataclasses.dataclass(frozen=True)
 class SubtitleLine:
     """Represents a single subtitle entry from an SRT file."""
@@ -164,24 +279,55 @@ class TextAnalyzer:
 
     def extract_content_tokens(self, text: str) -> List[AnalyzedToken]:
         cleaned = self._clean_text(text)
-        tokens = self._tokenizer.tokenize(cleaned, self._mode)
+        raw_tokens = self._tokenizer.tokenize(cleaned, self._mode)
+        
+        matches = detect_grammar_patterns(raw_tokens)
+        
+        grammar_insertions = {}
+        skip_indices = set()
+        for start, end, pattern in matches:
+            grammar_insertions[start] = (end, pattern)
+            for idx in range(start + 1, end + 1):
+                skip_indices.add(idx)
+                
         words: List[AnalyzedToken] = []
-
-        for token in tokens:
+        i = 0
+        n = len(raw_tokens)
+        while i < n:
+            if i in skip_indices:
+                i += 1
+                continue
+                
+            token = raw_tokens[i]
             pos = tuple(token.part_of_speech())
             lemma = token.dictionary_form()
             surface = token.surface()
-            if self._should_ignore_token(pos, lemma, surface):
-                continue
-
-            words.append(
-                AnalyzedToken(
-                    lemma=lemma,
-                    surface=surface,
-                    pos=pos,
-                    is_proper_noun="固有名詞" in pos,
+            
+            if not self._should_ignore_token(pos, lemma, surface):
+                words.append(
+                    AnalyzedToken(
+                        lemma=lemma,
+                        surface=surface,
+                        pos=pos,
+                        is_proper_noun="固有名詞" in pos,
+                    )
                 )
-            )
+                
+            if i in grammar_insertions:
+                end, pattern = grammar_insertions[i]
+                grammar_surface = "".join(raw_tokens[k].surface() for k in range(i + 1, end + 1))
+                words.append(
+                    AnalyzedToken(
+                        lemma=pattern,
+                        surface=grammar_surface,
+                        pos=("助動詞", "文法パターン", "*", "*"),
+                        is_proper_noun=False,
+                    )
+                )
+                i = end + 1
+            else:
+                i += 1
+                
         return words
 
     def extract_content_words(self, text: str) -> List[str]:
@@ -439,6 +585,8 @@ class DictLookup:
         self.jam = Jamdict()
 
     def get_definition(self, word: str) -> Tuple[str, str]:
+        if word in GRAMMAR_DICT:
+            return GRAMMAR_DICT[word]["definition"], GRAMMAR_DICT[word]["reading"]
         try:
             result = self.jam.lookup(word)
             if not result.entries:
