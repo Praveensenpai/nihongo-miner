@@ -939,7 +939,7 @@ class CliApp:
 
     def sync_unsynced_cards(self) -> None:
         with get_session() as session:
-            unsynced = session.exec(select(MinedCard).where(MinedCard.anki_note_id is None)).all()
+            unsynced = session.exec(select(MinedCard).where(MinedCard.anki_note_id == None)).all()
             if unsynced:
                 print(f"[bold cyan]Found {len(unsynced)} unsynced cards. Syncing to Anki...[/bold cyan]")
                 synced_count = 0
@@ -1328,8 +1328,29 @@ def run_app(
         False,
         "--forget",
         help="Interactively search and remove words from your known words database."
+    ),
+    sync: bool = typer.Option(
+        False,
+        "--sync",
+        help="Sync pending local cards to Anki and exit."
     )
 ) -> None:
+    if sync:
+        create_db_and_tables()
+        cli_app = CliApp("")
+        if cli_app.anki.is_running():
+            print("[bold green]Connected to Anki (AnkiConnect detected).[/bold green]")
+            cli_app.anki.create_deck_if_missing()
+            with get_session() as session:
+                unsynced = session.exec(select(MinedCard).where(MinedCard.anki_note_id == None)).all()
+                if not unsynced:
+                    print("[bold green]No pending local cards to sync.[/bold green]")
+                    return
+            cli_app.sync_unsynced_cards()
+        else:
+            print("[bold red]Error: Anki not detected. Please make sure Anki is open and AnkiConnect is installed.[/bold red]")
+        return
+
     if stats:
         create_db_and_tables()
         knowledge = KnowledgeModel()
