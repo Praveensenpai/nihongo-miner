@@ -47,6 +47,10 @@ GRAMMAR_DICT: Dict[str, Dict[str, str]] = {
     "〜にくい": {
         "definition": "hard to do; difficult to; unlikely to",
         "reading": "にくい"
+    },
+    "〜てほしい": {
+        "definition": "want someone to do; I would like you to do; please do for me",
+        "reading": "てほしい"
     }
 }
 
@@ -123,7 +127,23 @@ def detect_grammar_patterns(tokens: Sequence[Any]) -> List[Tuple[int, int, str]]
                 i += 3
                 continue
 
-        # 5. 〜やすい / 〜にくい
+        # 5. 〜てほしい
+        # Sequence: [Verb] + [て/で (接続助詞)] + [ほしい]
+        if i + 2 < n:
+            t0, t1, t2 = tokens[i], tokens[i+1], tokens[i+2]
+            t0_pos = t0.part_of_speech()[0]
+            t1_lemma = t1.dictionary_form()
+            t1_subpos = t1.part_of_speech()[1] if len(t1.part_of_speech()) > 1 else ""
+            t2_lemma = t2.dictionary_form()
+            if (t0_pos == "動詞" and
+                t1_lemma in ("て", "で") and
+                t1_subpos == "接続助詞" and
+                t2_lemma == "ほしい"):
+                matches.append((i, i + 2, "〜てほしい"))
+                i += 3
+                continue
+
+        # 6. 〜やすい / 〜にくい
         # Sequence: [Verb] + [やすい/にくい]
         if i + 1 < n:
             t0, t1 = tokens[i], tokens[i+1]
@@ -1283,6 +1303,11 @@ def run_app(
         False, 
         "--stats", 
         help="Display the total number of known words and exit."
+    ),
+    verify: bool = typer.Option(
+        False,
+        "--verify",
+        help="Interactively test sentence parsing and preview Anki card generation."
     )
 ) -> None:
     if stats:
@@ -1324,6 +1349,63 @@ def run_app(
             console.print(table)
             
         console.print()
+        return
+
+    if verify:
+        create_db_and_tables()
+        knowledge = KnowledgeModel()
+        analyzer = TextAnalyzer()
+        lookup = DictLookup()
+        console = Console()
+        
+        console.print()
+        console.print("[bold yellow]Interactive Sentence Parser & Verification[/bold yellow]")
+        console.print("Enter a Japanese sentence to see how it is parsed and how cards would look:")
+        console.print()
+        
+        try:
+            sentence = input("Sentence: ").strip()
+            if not sentence:
+                console.print("[bold red]No sentence entered. Exiting.[/bold red]")
+                return
+                
+            tokens = analyzer.extract_content_tokens(sentence)
+            if not tokens:
+                console.print("[bold red]No content words found in sentence.[/bold red]")
+                return
+                
+            content_words = tuple(token.lemma for token in tokens)
+            
+            console.print()
+            console.print(Panel(
+                f"[bold cyan]Sentence:[/bold cyan] {sentence}\n"
+                f"[bold cyan]Extracted Lemmas:[/bold cyan] {', '.join(content_words)}",
+                title="[bold green]Analysis Results[/bold green]"
+            ))
+            
+            # Print card preview for each content word
+            for idx, token in enumerate(tokens, 1):
+                definition, reading = lookup.get_definition(token.lemma)
+                is_known = knowledge.is_known(token.lemma)
+                
+                status = "[bold green]KNOWN[/bold green]" if is_known else "[bold red]UNKNOWN[/bold red]"
+                
+                # Build context words (other content words)
+                context_words = [w for w in content_words if w != token.lemma]
+                
+                card_table = Table(title=f"Card Preview #{idx} (Target: {token.lemma})", show_header=False, box=None, padding=(0, 2))
+                card_table.add_column("Field", style="bold yellow")
+                card_table.add_column("Value")
+                
+                card_table.add_row("Target Word", f"{token.lemma} ({status})")
+                card_table.add_row("Reading", reading or "N/A")
+                card_table.add_row("Definition", definition)
+                card_table.add_row("Context Words", ", ".join(context_words) if context_words else "None")
+                
+                console.print(Panel(card_table, expand=False))
+                console.print()
+        except (KeyboardInterrupt, SystemExit):
+            console.print("\n[bold red]Cancelled.[/bold red]")
         return
     
     subtitle_path = ""
