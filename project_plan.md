@@ -57,12 +57,27 @@ If rebuilding or expanding this, stick to this fast, offline-first CLI stack:
 *   **NLP Engine:** `sudachipy` + `sudachidict-core`
 *   **Dictionary Lookup:** `jamdict` + `jamdict-data` (Offline JMdict SQLite database)
 
-## 8. MVP Code Reference (`miner.py`)
-The MVP requires 7 key components:
-1.  `SubtitleParser`: Cleans and extracts SRT text.
-2.  `TextAnalyzer`: Wraps SudachiPy to filter particles and extract content lemmas.
-3.  `KnowledgeModel`: Performs direct reads/writes of known words to the SQLite database.
-4.  `WordFrequency`: Looks up word frequency ranks.
-5.  `prompt_pre_add_known_words`: Standardizes raw terminal inputs (`tty`, `termios`, `os.read`) and manages viewport rendering (`console.clear()`) for the scrollable known-words checkbox list.
-6.  `MiningEngine`: Calculates the $i+1$ filter and applies the Scoring Algorithm.
-7.  `DictLookup`: Wraps Jamdict to get English definitions.
+## 8. MVP Code Reference & Architecture (`src/`)
+The MVP is strictly cleanly separated into modules:
+1.  `miner.py`: Contains `SubtitleParser`, `TextAnalyzer`, `WordFrequency`, `prompt_pre_add_known_words`, and `MiningEngine`.
+2.  `database.py`: Contains SQLModel definitions (`KnownWord`, `FrequencyWord`, `MinedCard`, `MiningSession`) and DB engine setup.
+3.  `anki.py`: Handles connection to local AnkiConnect for exporting cards.
+4.  `jpdb.py`: Connects to JPDB to scrape user known words and frequency lists.
+5.  `jotoba.py`: Connects to Jotoba API to fetch accurate pitch accent data dynamically.
+
+---
+
+## 9. Completed Enhancements (Phase 2 & 3)
+*   **Japanese Grammar Sequence Rules:** Custom token pattern detection (e.g. `[Verb] + [て/で] + [しまう]`) accurately groups auxiliary structures to prevent them from being treated as random unknown dictionary words.
+*   **Interactive CLI Tools:** Added interactive terminal utilities for database curation and debugging:
+    *   `--forget`: A searchable, keyboard-driven UI to select and bulk-delete known words from the local database.
+    *   `--verify`: A sandbox to input any sentence and preview the tokenization, knowledge comparison, and final card formatting locally.
+*   **Pitch Accent on Cards:** Integrated dynamic pitch accent lookup via Jotoba API. Calculates correct morae and displays pitch (e.g. `[Pitch: LHL]`) inline with the card reading without heavy offline datasets.
+*   **SQLite Session History:** Fully migrated subtitle/video tracking into a `MiningSession` SQLite table, ensuring `data.db` is the absolute single source of truth for all application state.
+
+---
+
+## 10. Next Steps / Future Roadmap
+*   **Refinement of Grammar Rules:** Add more complex grammar patterns (e.g. `~ざるを得ない`, `~かもしれない`) to `GRAMMAR_DICT` in `miner.py`.
+*   **Card Customization:** Allow the user to inject custom HTML/CSS for an even better Anki card design, or create a configuration file for card templates.
+*   **Multi-Subtitle Batch Processing:** Expand the interactive session selection to queue up a whole folder of subtitles for overnight processing/bootstrapping.
