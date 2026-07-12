@@ -20,6 +20,7 @@ from sudachipy import dictionary, tokenizer
 from src.database import KnownWord, FrequencyWord, MinedCard, get_session, create_db_and_tables
 from src.anki import AnkiClient
 from src.jpdb import scrape_jpdb, get_jpdb_global_rank, list_cached_jpdb
+from src.jotoba import get_pitch_accent
 
 app = typer.Typer(rich_markup_mode="rich")
 
@@ -613,39 +614,6 @@ class MiningEngine:
         return freq_score + ep_score - length_penalty - proper_noun_penalty - extra_unknown_penalty
 
 
-def count_morae(text: str) -> int:
-    small_kana = set("ゃゅょぁぃぅぇぉャュョァィゥェォ")
-    return sum(1 for char in text if char not in small_kana)
-
-
-def get_pitch_accent(word: str, reading: str) -> str:
-    if not word or not reading:
-        return ""
-    import urllib.request
-    import json
-    url = "https://jotoba.de/api/search/words"
-    data = json.dumps({"query": word, "language": "English"}).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=1.5) as response:
-            res = json.loads(response.read().decode())
-            if not res.get("words"):
-                return ""
-            for w in res["words"]:
-                w_kana = w["reading"]["kana"]
-                w_kanji = w["reading"].get("kanji", w_kana)
-                if w_kanji == word or w_kana == reading:
-                    pitch_data = w.get("pitch")
-                    if pitch_data:
-                        pitch_str = ""
-                        for part in pitch_data:
-                            mora_count = count_morae(part["part"])
-                            pitch_char = "H" if part["high"] else "L"
-                            pitch_str += pitch_char * mora_count
-                        return pitch_str
-            return ""
-    except Exception:
-        return ""
 
 
 class DictLookup:
