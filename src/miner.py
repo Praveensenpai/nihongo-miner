@@ -1471,6 +1471,10 @@ def run_app(
                         return 'up'
                     elif seq in (b'\x1b[B', b'\x1bOB'):
                         return 'down'
+                    elif seq in (b'\x1b[D', b'\x1bOD'):
+                        return 'left'
+                    elif seq in (b'\x1b[C', b'\x1bOC'):
+                        return 'right'
                     elif seq == b' ':
                         return 'space'
                     elif seq in (b'\r', b'\n'):
@@ -1542,11 +1546,15 @@ def run_app(
                     else:
                         selected.add(cursor)
                     draw_forget(console)
-                elif key in ('up', 'down'):
+                elif key in ('up', 'down', 'left', 'right'):
                     if key == 'up':
                         cursor = max(0, cursor - 2)
                     elif key == 'down':
                         cursor = min(len(choices) - 1, cursor + 2)
+                    elif key == 'left':
+                        cursor = max(0, cursor - 1)
+                    elif key == 'right':
+                        cursor = min(len(choices) - 1, cursor + 1)
                     max_visible = 15
                     cursor_row = cursor // 2
                     if cursor_row < scroll_offset:
