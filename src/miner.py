@@ -3,6 +3,7 @@ from rich import print
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 from rich.prompt import IntPrompt
 import dataclasses
 import json
@@ -428,6 +429,20 @@ class KnowledgeModel:
                     session.add(KnownWord(word=word))
                 session.commit()
         return len(new_words)
+
+    def remove_known_words(self, words: Iterable[str]) -> int:
+        words_list = [w for w in words if w in self.known_words]
+        if not words_list:
+            return 0
+        for word in words_list:
+            self.known_words.discard(word)
+        with get_session() as session:
+            for word in words_list:
+                db_word = session.exec(select(KnownWord).where(KnownWord.word == word)).first()
+                if db_word:
+                    session.delete(db_word)
+            session.commit()
+        return len(words_list)
 
 
 class WordFrequency:
@@ -1308,6 +1323,11 @@ def run_app(
         False,
         "--verify",
         help="Interactively test sentence parsing and preview Anki card generation."
+    ),
+    forget: bool = typer.Option(
+        False,
+        "--forget",
+        help="Interactively search and remove words from your known words database."
     )
 ) -> None:
     if stats:
@@ -1407,7 +1427,152 @@ def run_app(
         except (KeyboardInterrupt, SystemExit):
             console.print("\n[bold red]Cancelled.[/bold red]")
         return
-    
+
+    if forget:
+        create_db_and_tables()
+        knowledge = KnowledgeModel()
+        console = Console()
+
+        if not knowledge.known_words:
+            console.print("\n[bold yellow]Your known words database is empty.[/bold yellow]\n")
+            return
+
+        console.print()
+        search = input("Search word to forget (press Enter to list all): ").strip().lower()
+        console.print()
+
+        all_words = sorted(knowledge.known_words)
+        matches = [w for w in all_words if search in w.lower()] if search else all_words
+
+        if not matches:
+            console.print(f"[bold red]No known words matching '{search}'.[/bold red]\n")
+            return
+
+        import sys
+        import tty
+        import termios
+        import select as _select
+        import os
+
+        choices = matches
+        cursor = 0
+        scroll_offset = 0
+        selected: set = set()
+
+        def get_key_forget():
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                rlist, _, _ = _select.select([sys.stdin], [], [], 0.1)
+                if rlist:
+                    seq = os.read(fd, 10)
+                    if seq in (b'\x1b[A', b'\x1bOA'):
+                        return 'up'
+                    elif seq in (b'\x1b[B', b'\x1bOB'):
+                        return 'down'
+                    elif seq == b' ':
+                        return 'space'
+                    elif seq in (b'\r', b'\n'):
+                        return 'enter'
+                    elif seq in (b'q', b'Q', b'\x03', b'\x1b'):
+                        return 'quit'
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            return None
+
+        def draw_forget(console):
+            console.clear()
+            console.print("[bold red]Forget Words[/bold red]  [dim](Space = toggle, Enter = confirm, Q = cancel)[/dim]")
+            console.print()
+
+            table = Table(
+                title=f"[bold red]Select words to REMOVE from known database[/bold red] [dim]({len(matches)} matching)[/dim]",
+                show_header=False, show_edge=False, box=None, padding=(0, 2)
+            )
+            num_cols = 2
+            for _ in range(num_cols):
+                table.add_column(justify="left")
+
+            max_visible = 15
+            total_rows = (len(choices) + num_cols - 1) // num_cols
+            start_row = scroll_offset
+            end_row = min(total_rows, scroll_offset + max_visible)
+
+            for r in range(start_row, end_row):
+                row_data = []
+                for c in range(num_cols):
+                    idx = r * num_cols + c
+                    if idx < len(choices):
+                        word = choices[idx]
+                        is_sel = idx in selected
+                        is_cur = idx == cursor
+                        prefix = "[magenta]▶[/magenta]" if is_cur else " "
+                        box = "[[bold red]x[/bold red]]" if is_sel else "[ ]"
+                        style = "bold red" if is_sel else "white"
+                        if is_cur:
+                            style = "bold cyan reverse"
+                        row_data.append(f"{prefix} {box} [{style}]{word}[/{style}]")
+                    else:
+                        row_data.append("")
+                table.add_row(*row_data)
+
+            if scroll_offset > 0:
+                console.print(Text("   ▲  More words above  ▲", style="bold yellow"))
+            console.print(table)
+            if end_row < total_rows:
+                console.print(Text("   ▼  More words below  ▼", style="bold yellow"))
+            console.print()
+            console.print(Text(f"   {len(selected)} word(s) selected for removal", style="bold red" if selected else "dim"))
+
+        sys.stdout.write("\x1b[?25l")
+        sys.stdout.flush()
+        try:
+            draw_forget(console)
+            while True:
+                key = get_key_forget()
+                if key == 'quit':
+                    selected.clear()
+                    break
+                elif key == 'enter':
+                    break
+                elif key == 'space':
+                    if cursor in selected:
+                        selected.remove(cursor)
+                    else:
+                        selected.add(cursor)
+                    draw_forget(console)
+                elif key in ('up', 'down'):
+                    if key == 'up':
+                        cursor = max(0, cursor - 2)
+                    elif key == 'down':
+                        cursor = min(len(choices) - 1, cursor + 2)
+                    max_visible = 15
+                    cursor_row = cursor // 2
+                    if cursor_row < scroll_offset:
+                        scroll_offset = cursor_row
+                    elif cursor_row >= scroll_offset + max_visible:
+                        scroll_offset = cursor_row - max_visible + 1
+                    draw_forget(console)
+        except (KeyboardInterrupt, SystemExit):
+            selected.clear()
+        finally:
+            sys.stdout.write("\x1b[?25h")
+            sys.stdout.flush()
+            console.clear()
+
+        if selected:
+            words_to_remove = [choices[i] for i in selected]
+            removed = knowledge.remove_known_words(words_to_remove)
+            console.print(f"\n[bold red]Removed {removed} word(s) from your database:[/bold red]")
+            for w in words_to_remove:
+                console.print(f"  [dim]- {w}[/dim]")
+            console.print()
+        else:
+            console.print("\n[bold yellow]No words removed.[/bold yellow]\n")
+        return
+
+
     subtitle_path = ""
     video_path = ""
     
