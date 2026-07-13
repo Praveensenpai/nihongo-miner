@@ -40,6 +40,14 @@ class MiningSession(SQLModel, table=True):
     subtitle_path: str = Field(index=True)
     video_path: str = Field(default="")
     
+class PitchAccentCache(SQLModel, table=True):
+    """Cached pitch accent data to prevent repeated API calls."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    word: str = Field(index=True)
+    reading: str = Field(index=True)
+    pitch: str
+
+    
 DB_FILE = (
     pathlib.Path.home() / "AppData" / "Local" / "nihongo-miner" / "data.db"
     if sys.platform == "win32"
