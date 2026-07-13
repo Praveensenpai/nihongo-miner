@@ -5,6 +5,7 @@ import urllib.error
 from typing import Any, Optional
 
 from src.config import config
+from src.utils import furigana_sentence
 
 class AnkiClient:
     """Client for communicating with Anki Desktop via AnkiConnect."""
@@ -92,11 +93,17 @@ class AnkiClient:
         
         reading_suffix = f" ({reading})" if reading and reading != target_word else ""
         
+        try:
+            furigana = furigana_sentence(sentence)
+        except Exception:
+            furigana = sentence
+
         vars_dict = {
             "word": target_word,
             "reading": reading,
             "reading_suffix": reading_suffix,
             "sentence": sentence,
+            "furigana_sentence": furigana,
             "definition": definition,
             "audio": audio_tag,
             "image": image_tag,

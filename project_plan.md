@@ -76,6 +76,7 @@ The MVP is strictly cleanly separated into modules:
 *   **SQLite Session History:** Fully migrated subtitle/video tracking into a `MiningSession` SQLite table, ensuring `data.db` is the absolute single source of truth for all application state.
 *   **Card Customization:** Added support for customized Anki card templates (front/back HTML), custom tags, and deck/model choices loaded from a `config.toml` file.
 *   **Refinement of Grammar Rules:** Expanded pattern detection to include complex grammar patterns (`〜わけではない`, `〜わけにはいかない`, `〜そうだ`, `〜すぎる`, `〜ようになる`) to prevent incorrect vocabulary splits.
+*   **Furigana Support:** Added native HTML `<ruby>` tags generation for sentence cards, allowing users to display furigana on top of kanji using contextual readings from SudachiPy.
 
 ---
 

@@ -25,13 +25,7 @@ from src.jotoba import get_pitch_accent
 app = typer.Typer(rich_markup_mode="rich")
 
 
-def katakana_to_hiragana(text: str) -> str:
-    """Converts a string of Katakana characters to Hiragana."""
-    return "".join(
-        chr(ord(char) - 96) if 0x30A1 <= ord(char) <= 0x30F6 else char
-        for char in text
-    )
-
+from src.utils import katakana_to_hiragana, furigana_sentence
 
 GRAMMAR_DICT: Dict[str, Dict[str, str]] = {
     "〜てしまう": {
