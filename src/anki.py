@@ -4,13 +4,15 @@ import urllib.request
 import urllib.error
 from typing import Any, Optional
 
+from src.config import config
+
 class AnkiClient:
     """Client for communicating with Anki Desktop via AnkiConnect."""
     
     def __init__(self, url: str = "http://127.0.0.1:8765") -> None:
         self.url = url
-        self.deck_name = "Japanese Mining"
-        self.model_name = "Basic"
+        self.deck_name = config.deck_name
+        self.model_name = config.model_name
 
     def _invoke(self, action: str, **params: Any) -> Any:
         """Sends a JSON request to AnkiConnect."""
@@ -57,27 +59,23 @@ class AnkiClient:
 
     def add_card(self, sentence: str, target_word: str, reading: str, definition: str, audio_path: Optional[str] = None, image_path: Optional[str] = None, base_score: Optional[float] = None, adjusted_score: Optional[float] = None, known_words: Optional[str] = None, unknown_words: Optional[str] = None) -> Optional[int]:
         """Adds a mined flashcard to Anki. Returns the note ID on success, or None on failure."""
-        front_html = f"<div><b>{target_word}</b>"
-        if reading and reading != target_word:
-            front_html += f" ({reading})"
-        front_html += f"</div><br><div>{sentence}</div>"
-        
+        audio_tag = ""
         if audio_path:
             import os
             filename = os.path.basename(audio_path)
             try:
                 self._invoke("storeMediaFile", filename=filename, path=str(audio_path))
-                front_html += f"<br>[sound:{filename}]"
+                audio_tag = f"<br>[sound:{filename}]"
             except Exception as e:
                 print(f"[bold yellow]Warning:[/bold yellow] Failed to upload audio: {e}")
                 
-        back_html = f"<div>{definition}</div>"
+        image_tag = ""
         if image_path:
             import os
             filename = os.path.basename(image_path)
             try:
                 self._invoke("storeMediaFile", filename=filename, path=str(image_path))
-                back_html += f"<br><img src=\"{filename}\" style=\"max-height: 270px; max-width: 100%; height: auto;\">"
+                image_tag = f"<br><img src=\"{filename}\" style=\"max-height: 270px; max-width: 100%; height: auto;\">"
             except Exception as e:
                 print(f"[bold yellow]Warning:[/bold yellow] Failed to upload image: {e}")
                 
@@ -92,7 +90,34 @@ class AnkiClient:
             stats_html += f"<b>Adjusted Score:</b> {adjusted_score:.2f}<br>"
         stats_html += "</div>"
         
-        back_html += stats_html
+        reading_suffix = f" ({reading})" if reading and reading != target_word else ""
+        
+        vars_dict = {
+            "word": target_word,
+            "reading": reading,
+            "reading_suffix": reading_suffix,
+            "sentence": sentence,
+            "definition": definition,
+            "audio": audio_tag,
+            "image": image_tag,
+            "known_words": known_words or "",
+            "unknown_words": unknown_words or "",
+            "base_score": f"{base_score:.2f}" if base_score is not None else "",
+            "adjusted_score": f"{adjusted_score:.2f}" if adjusted_score is not None else "",
+            "stats": stats_html,
+        }
+        
+        try:
+            front_html = config.front_template.format(**vars_dict)
+        except Exception as e:
+            print(f"[bold yellow]Warning:[/bold yellow] Failed to format front template: {e}. Falling back to default layout.")
+            front_html = f"<div><b>{target_word}</b>{reading_suffix}</div><br><div>{sentence}</div>{audio_tag}"
+            
+        try:
+            back_html = config.back_template.format(**vars_dict)
+        except Exception as e:
+            print(f"[bold yellow]Warning:[/bold yellow] Failed to format back template: {e}. Falling back to default layout.")
+            back_html = f"<div>{definition}</div>{image_tag}{stats_html}"
         
         note = {
             "deckName": self.deck_name,
@@ -104,7 +129,7 @@ class AnkiClient:
             "options": {
                 "allowDuplicate": False,
             },
-            "tags": ["ai_mined"]
+            "tags": config.tags
         }
         
         try:
