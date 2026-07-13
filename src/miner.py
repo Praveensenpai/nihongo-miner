@@ -1343,6 +1343,7 @@ def run_app(
         help="Sync pending local cards to Anki and exit."
     )
 ) -> None:
+    create_db_and_tables()
     if sync:
         create_db_and_tables()
         cli_app = CliApp("")
