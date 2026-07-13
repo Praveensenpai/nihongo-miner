@@ -53,6 +53,14 @@ GRAMMAR_DICT: Dict[str, Dict[str, str]] = {
     "〜てほしい": {
         "definition": "want someone to do; I would like you to do; please do for me",
         "reading": "てほしい"
+    },
+    "〜ざるを得ない": {
+        "definition": "cannot help but; cannot avoid; have no choice but to",
+        "reading": "ざるをえない"
+    },
+    "〜かもしれない": {
+        "definition": "might; perhaps; may; possibly",
+        "reading": "かもしれない"
     }
 }
 
@@ -82,6 +90,40 @@ def detect_grammar_patterns(tokens: Sequence[Any]) -> List[Tuple[int, int, str]]
                 t3_pos == "助詞" and 
                 t4_lemma == "ある"):
                 matches.append((i, i + 4, "〜たことがある"))
+                i += 5
+                continue
+
+        # 〜ざるを得ない
+        # Sequence: [Verb] + [ざる] + [を] + [得/え (lemma: 得る/える)] + [ない]
+        if i + 4 < n:
+            t0, t1, t2, t3, t4 = tokens[i], tokens[i+1], tokens[i+2], tokens[i+3], tokens[i+4]
+            t0_pos = t0.part_of_speech()[0]
+            t1_surface = t1.surface()
+            t2_surface = t2.surface()
+            t3_lemma = t3.dictionary_form()
+            t4_lemma = t4.dictionary_form()
+            if (t0_pos == "動詞" and 
+                t1_surface == "ざる" and 
+                t2_surface == "を" and 
+                t3_lemma in ("得る", "える") and 
+                t4_lemma == "ない"):
+                matches.append((i, i + 4, "〜ざるを得ない"))
+                i += 5
+                continue
+
+        # 〜かもしれない
+        # Sequence: [Word] + [か] + [も] + [しれ/知れ (lemma: しれる/知れる)] + [ない]
+        if i + 4 < n:
+            t0, t1, t2, t3, t4 = tokens[i], tokens[i+1], tokens[i+2], tokens[i+3], tokens[i+4]
+            t1_lemma = t1.dictionary_form()
+            t2_lemma = t2.dictionary_form()
+            t3_lemma = t3.dictionary_form()
+            t4_lemma = t4.dictionary_form()
+            if (t1_lemma == "か" and 
+                t2_lemma == "も" and 
+                t3_lemma in ("しれる", "知れる") and 
+                t4_lemma == "ない"):
+                matches.append((i, i + 4, "〜かもしれない"))
                 i += 5
                 continue
 
