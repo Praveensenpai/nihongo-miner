@@ -81,4 +81,4 @@ The MVP is strictly cleanly separated into modules:
 ---
 
 ## 10. Next Steps / Future Roadmap
-*   **Multi-Subtitle Batch Processing:** Expand the interactive session selection to queue up a whole folder of subtitles for overnight processing/bootstrapping.
+*   **Completed:** All planned features are fully implemented! The current focus is on maintaining the selective interactive mining workflow.
