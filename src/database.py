@@ -1,4 +1,5 @@
 import pathlib
+import sys
 from typing import Optional
 from sqlmodel import Field, SQLModel, create_engine, Session
 
@@ -39,13 +40,22 @@ class MiningSession(SQLModel, table=True):
     subtitle_path: str = Field(index=True)
     video_path: str = Field(default="")
     
-DB_FILE = pathlib.Path("data.db")
+DB_FILE = (
+    pathlib.Path.home() / "AppData" / "Local" / "nihongo-miner" / "data.db"
+    if sys.platform == "win32"
+    else (
+        pathlib.Path.home() / "Library" / "Application Support" / "nihongo-miner" / "data.db"
+        if sys.platform == "darwin"
+        else pathlib.Path.home() / ".local" / "share" / "nihongo-miner" / "data.db"
+    )
+)
 sqlite_url = f"sqlite:///{DB_FILE.absolute()}"
 
 engine = create_engine(sqlite_url, echo=False)
 
 def create_db_and_tables():
     """Initializes the database schema."""
+    DB_FILE.parent.mkdir(parents=True, exist_ok=True)
     SQLModel.metadata.create_all(engine)
 
 def get_session():
