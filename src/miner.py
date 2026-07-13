@@ -69,6 +69,26 @@ GRAMMAR_DICT: Dict[str, Dict[str, str]] = {
     "〜かもしれない": {
         "definition": "might; perhaps; may; possibly",
         "reading": "かもしれない"
+    },
+    "〜わけではない": {
+        "definition": "it doesn't mean that; it is not the case that; not necessarily",
+        "reading": "わけではない"
+    },
+    "〜わけにはいかない": {
+        "definition": "cannot afford to; must not; no way one can do",
+        "reading": "わけにはいかない"
+    },
+    "〜そうだ": {
+        "definition": "looks like; seems like; appears; I hear that",
+        "reading": "そうだ"
+    },
+    "〜すぎる": {
+        "definition": "too much; excessively",
+        "reading": "すぎる"
+    },
+    "〜ようになる": {
+        "definition": "to reach the point where; to come to be; to start to",
+        "reading": "ようになる"
     }
 }
 
@@ -135,6 +155,54 @@ def detect_grammar_patterns(tokens: Sequence[Any]) -> List[Tuple[int, int, str]]
                 i += 5
                 continue
 
+        # 〜わけにはいかない
+        # Sequence: [Word] + [わけ] + [に] + [は] + [いかない/行く/いく]
+        if i + 4 < n:
+            t0, t1, t2, t3, t4 = tokens[i], tokens[i+1], tokens[i+2], tokens[i+3], tokens[i+4]
+            t1_lemma = t1.dictionary_form()
+            t2_lemma = t2.dictionary_form()
+            t3_lemma = t3.dictionary_form()
+            t4_lemma = t4.dictionary_form()
+            if (t1_lemma in ("わけ", "訳") and 
+                t2_lemma == "に" and 
+                t3_lemma == "は" and 
+                t4_lemma in ("いかない", "行く", "いく")):
+                matches.append((i, i + 4, "〜わけにはいかない"))
+                i += 5
+                continue
+
+        # 〜わけではない
+        # Sequence: [Word] + [わけ] + [で] + [は] + [ない]
+        if i + 4 < n:
+            t0, t1, t2, t3, t4 = tokens[i], tokens[i+1], tokens[i+2], tokens[i+3], tokens[i+4]
+            t1_lemma = t1.dictionary_form()
+            t2_lemma = t2.dictionary_form()
+            t3_lemma = t3.dictionary_form()
+            t4_lemma = t4.dictionary_form()
+            if (t1_lemma in ("わけ", "訳") and 
+                t2_lemma == "で" and 
+                t3_lemma == "は" and 
+                t4_lemma in ("ない", "無し", "なし")):
+                matches.append((i, i + 4, "〜わけではない"))
+                i += 5
+                continue
+
+        # 〜ようになる
+        # Sequence: [Verb] + [よう] + [に] + [なる]
+        if i + 3 < n:
+            t0, t1, t2, t3 = tokens[i], tokens[i+1], tokens[i+2], tokens[i+3]
+            t0_pos = t0.part_of_speech()[0]
+            t1_lemma = t1.dictionary_form()
+            t2_lemma = t2.dictionary_form()
+            t3_lemma = t3.dictionary_form()
+            if (t0_pos == "動詞" and 
+                t1_lemma in ("よう", "様") and 
+                t2_lemma == "に" and 
+                t3_lemma in ("なる", "成る")):
+                matches.append((i, i + 3, "〜ようになる"))
+                i += 4
+                continue
+
         # 2. 〜てください
         # Sequence: [Verb] + [て/で] + [くださる/ください]
         if i + 2 < n:
@@ -195,6 +263,18 @@ def detect_grammar_patterns(tokens: Sequence[Any]) -> List[Tuple[int, int, str]]
                 i += 3
                 continue
 
+        # 〜そうだ (looks like / seems like / heard that)
+        # Sequence: [Word] + [そう] + [だ/です/な/に]
+        if i + 2 < n:
+            t0, t1, t2 = tokens[i], tokens[i+1], tokens[i+2]
+            t1_lemma = t1.dictionary_form()
+            t2_lemma = t2.dictionary_form()
+            if (t1_lemma == "そう" and 
+                t2_lemma in ("だ", "です", "な", "に", "である")):
+                matches.append((i, i + 2, "〜そうだ"))
+                i += 3
+                continue
+
         # 6. 〜やすい / 〜にくい
         # Sequence: [Verb] + [やすい/にくい]
         if i + 1 < n:
@@ -203,6 +283,18 @@ def detect_grammar_patterns(tokens: Sequence[Any]) -> List[Tuple[int, int, str]]
             t1_lemma = t1.dictionary_form()
             if t0_pos == "動詞" and t1_lemma in ("やすい", "にくい"):
                 matches.append((i, i + 1, f"〜{t1_lemma}"))
+                i += 2
+                continue
+
+        # 〜すぎる
+        # Sequence: [Word] + [すぎる/過ぎる]
+        if i + 1 < n:
+            t0, t1 = tokens[i], tokens[i+1]
+            t0_pos = t0.part_of_speech()[0]
+            t1_lemma = t1.dictionary_form()
+            if (t0_pos in ("動詞", "形容詞", "名詞") and 
+                t1_lemma in ("すぎる", "過ぎる")):
+                matches.append((i, i + 1, "〜すぎる"))
                 i += 2
                 continue
 

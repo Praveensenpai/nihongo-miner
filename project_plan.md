@@ -75,9 +75,9 @@ The MVP is strictly cleanly separated into modules:
 *   **Pitch Accent on Cards:** Integrated dynamic pitch accent lookup via Jotoba API. Calculates correct morae and displays pitch (e.g. `[Pitch: LHL]`) inline with the card reading without heavy offline datasets.
 *   **SQLite Session History:** Fully migrated subtitle/video tracking into a `MiningSession` SQLite table, ensuring `data.db` is the absolute single source of truth for all application state.
 *   **Card Customization:** Added support for customized Anki card templates (front/back HTML), custom tags, and deck/model choices loaded from a `config.toml` file.
+*   **Refinement of Grammar Rules:** Expanded pattern detection to include complex grammar patterns (`〜わけではない`, `〜わけにはいかない`, `〜そうだ`, `〜すぎる`, `〜ようになる`) to prevent incorrect vocabulary splits.
 
 ---
 
 ## 10. Next Steps / Future Roadmap
-*   **Refinement of Grammar Rules:** Add more complex grammar patterns (e.g. `~ざるを得ない`, `~かもしれない`) to `GRAMMAR_DICT` in `miner.py`.
 *   **Multi-Subtitle Batch Processing:** Expand the interactive session selection to queue up a whole folder of subtitles for overnight processing/bootstrapping.
