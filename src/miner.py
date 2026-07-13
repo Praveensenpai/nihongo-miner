@@ -25,6 +25,14 @@ from src.jotoba import get_pitch_accent
 app = typer.Typer(rich_markup_mode="rich")
 
 
+def katakana_to_hiragana(text: str) -> str:
+    """Converts a string of Katakana characters to Hiragana."""
+    return "".join(
+        chr(ord(char) - 96) if 0x30A1 <= ord(char) <= 0x30F6 else char
+        for char in text
+    )
+
+
 GRAMMAR_DICT: Dict[str, Dict[str, str]] = {
     "〜てしまう": {
         "definition": "to end up doing (something/accidentally/regretfully); to complete thoroughly",
@@ -217,6 +225,7 @@ class AnalyzedToken:
     surface: str
     pos: Tuple[str, ...]
     is_proper_noun: bool
+    reading: str = ""
 
 
 
@@ -368,24 +377,34 @@ class TextAnalyzer:
             surface = token.surface()
             
             if not self._should_ignore_token(pos, lemma, surface):
+                raw_reading = ""
+                try:
+                    raw_reading = token.reading_form()
+                except Exception:
+                    pass
+                reading = katakana_to_hiragana(raw_reading) if raw_reading else ""
+                
                 words.append(
                     AnalyzedToken(
                         lemma=lemma,
                         surface=surface,
                         pos=pos,
                         is_proper_noun="固有名詞" in pos,
+                        reading=reading,
                     )
                 )
                 
             if i in grammar_insertions:
                 end, pattern = grammar_insertions[i]
                 grammar_surface = "".join(raw_tokens[k].surface() for k in range(i + 1, end + 1))
+                grammar_reading = GRAMMAR_DICT.get(pattern, {}).get("reading", "")
                 words.append(
                     AnalyzedToken(
                         lemma=pattern,
                         surface=grammar_surface,
                         pos=("助動詞", "文法パターン", "*", "*"),
                         is_proper_noun=False,
+                        reading=grammar_reading,
                     )
                 )
                 i = end + 1
@@ -519,6 +538,7 @@ class CandidateSentence:
     unknown_word: str
     freq_rank: int
     score: float
+    unknown_word_reading: str = ""
 
 
 class MiningEngine:
@@ -604,11 +624,14 @@ class MiningEngine:
                         if word != target_word and self.knowledge.is_known(word)
                     )
                 )
+                target_token = next((t for t in tokens if t.lemma == target_word), None)
+                target_reading = target_token.reading if target_token else ""
                 cand = CandidateSentence(
                     sentence=line,
                     content_words=content_words,
                     known_context_words=known_context_words,
                     unknown_word=target_word,
+                    unknown_word_reading=target_reading,
                     freq_rank=rank,
                     score=score,
                 )
@@ -664,13 +687,22 @@ class DictLookup:
     def __init__(self) -> None:
         self.jam = Jamdict()
 
-    def get_definition(self, word: str) -> Tuple[str, str]:
+    def get_definition(self, word: str, reading: str | None = None) -> Tuple[str, str]:
         if word in GRAMMAR_DICT:
             return GRAMMAR_DICT[word]["definition"], GRAMMAR_DICT[word]["reading"]
         try:
             result = self.jam.lookup(word)
             if not result.entries:
                 return "No definition found.", ""
+            
+            # If reading is provided, check if any entry has a matching kana form.
+            # If so, we only consider entries where the reading matches.
+            has_reading_match = False
+            if reading:
+                for entry in result.entries:
+                    if any(kf.text == reading for kf in entry.kana_forms):
+                        has_reading_match = True
+                        break
             
             # Prioritize entries where the searched word is the primary spelling
             # and sort by JMdict priority tags (ichi1, news1, etc.)
@@ -683,9 +715,19 @@ class DictLookup:
                     is_match = True
                 if entry.kanji_forms and entry.kanji_forms[0].text == word:
                     is_match = True
+                if not is_match:
+                    if any(kf.text == word for kf in entry.kanji_forms):
+                        is_match = True
+                    if any(kf.text == word for kf in entry.kana_forms):
+                        is_match = True
                     
                 if not is_match:
                     continue
+                
+                # Filter by actual reading if there is a matching entry
+                if has_reading_match and reading:
+                    if not any(kf.text == reading for kf in entry.kana_forms):
+                        continue
                     
                 score = 0
                 for form in list(entry.kanji_forms) + list(entry.kana_forms):
@@ -706,7 +748,8 @@ class DictLookup:
                 best_entry = result.entries[0]
                 
             entry = best_entry
-            kana = entry.kana_forms[0].text if entry.kana_forms else ""
+            # Prefer the matching reading if available
+            kana = reading if (reading and any(kf.text == reading for kf in entry.kana_forms)) else (entry.kana_forms[0].text if entry.kana_forms else "")
             
             if not entry.senses:
                 return "No senses found.", kana
@@ -1127,11 +1170,11 @@ class CliApp:
                 
             if self.jpdb_vocab and cand.unknown_word in self.jpdb_vocab:
                 definition = self.jpdb_vocab[cand.unknown_word]["definition"]
-                _, kana = lookup.get_definition(cand.unknown_word)
+                _, kana = lookup.get_definition(cand.unknown_word, getattr(cand, "unknown_word_reading", None))
                 if not definition:
-                    definition, _ = lookup.get_definition(cand.unknown_word)
+                    definition, _ = lookup.get_definition(cand.unknown_word, getattr(cand, "unknown_word_reading", None))
             else:
-                definition, kana = lookup.get_definition(cand.unknown_word)
+                definition, kana = lookup.get_definition(cand.unknown_word, getattr(cand, "unknown_word_reading", None))
  
             display_word = f"{cand.unknown_word} ({kana})" if kana and kana != cand.unknown_word else cand.unknown_word
             
@@ -1477,7 +1520,7 @@ def run_app(
             
             # Print card preview for each content word
             for idx, token in enumerate(tokens, 1):
-                definition, reading = lookup.get_definition(token.lemma)
+                definition, reading = lookup.get_definition(token.lemma, getattr(token, "reading", None))
                 is_known = knowledge.is_known(token.lemma)
                 
                 status = "[bold green]KNOWN[/bold green]" if is_known else "[bold red]UNKNOWN[/bold red]"
