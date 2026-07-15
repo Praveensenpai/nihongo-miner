@@ -58,7 +58,7 @@ class AnkiClient:
         except Exception as e:
             print(f"[bold yellow]Warning:[/bold yellow] Failed to ensure Anki deck exists: {e}")
 
-    def add_card(self, sentence: str, target_word: str, reading: str, definition: str, audio_path: Optional[str] = None, image_path: Optional[str] = None, base_score: Optional[float] = None, adjusted_score: Optional[float] = None, known_words: Optional[str] = None, unknown_words: Optional[str] = None) -> Optional[int]:
+    def add_card(self, sentence: str, target_word: str, reading: str, definition: str, audio_path: Optional[str] = None, image_path: Optional[str] = None, base_score: Optional[float] = None, adjusted_score: Optional[float] = None, known_words: Optional[str] = None, unknown_words: Optional[str] = None, tags: Optional[list[str]] = None) -> Optional[int]:
         """Adds a mined flashcard to Anki. Returns the note ID on success, or None on failure."""
         audio_tag = ""
         if audio_path:
@@ -126,6 +126,12 @@ class AnkiClient:
             print(f"[bold yellow]Warning:[/bold yellow] Failed to format back template: {e}. Falling back to default layout.")
             back_html = f"<div>{definition}</div>{image_tag}{stats_html}"
         
+        card_tags = list(config.tags)
+        if tags:
+            for t in tags:
+                if t not in card_tags:
+                    card_tags.append(t)
+
         note = {
             "deckName": self.deck_name,
             "modelName": self.model_name,
@@ -136,7 +142,7 @@ class AnkiClient:
             "options": {
                 "allowDuplicate": False,
             },
-            "tags": config.tags
+            "tags": card_tags
         }
         
         try:

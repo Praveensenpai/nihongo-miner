@@ -37,3 +37,18 @@ def furigana_sentence(text: str) -> str:
         else:
             parts.append(surface)
     return "".join(parts)
+
+
+def clean_tag_from_path(path) -> str:
+    """Generates a clean, valid Anki tag from a file path."""
+    import pathlib
+    import re
+    p = pathlib.Path(path)
+    stem = p.stem.strip()
+    if stem.endswith("_synced"):
+        stem = stem[:-7]
+    # Replace non-alphanumeric character sequences with a single underscore
+    cleaned = re.sub(r"[^\w]+", "_", stem)
+    # Strip leading/trailing underscores
+    cleaned = cleaned.strip("_")
+    return cleaned

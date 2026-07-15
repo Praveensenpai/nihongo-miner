@@ -1,7 +1,7 @@
 import pathlib
 import sys
 from typing import Optional
-from sqlmodel import Field, SQLModel, create_engine, Session
+from sqlmodel import Field, SQLModel, create_engine, Session, text
 
 class KnownWord(SQLModel, table=True):
     """Words the user already knows."""
@@ -33,6 +33,7 @@ class MinedCard(SQLModel, table=True):
     adjusted_score: Optional[float] = Field(default=None)
     known_words: Optional[str] = Field(default=None)
     unknown_words: Optional[str] = Field(default=None)
+    tags: Optional[str] = Field(default=None)
 
 class MiningSession(SQLModel, table=True):
     """Saved history of mined subtitle and video files."""
@@ -65,6 +66,16 @@ def create_db_and_tables():
     """Initializes the database schema."""
     DB_FILE.parent.mkdir(parents=True, exist_ok=True)
     SQLModel.metadata.create_all(engine)
+    
+    # Safe migration: add 'tags' column to minedcard if it doesn't exist
+    try:
+        with engine.begin() as connection:
+            result = connection.execute(text("PRAGMA table_info(minedcard)"))
+            columns = [row[1] for row in result.fetchall()]
+            if "tags" not in columns:
+                connection.execute(text("ALTER TABLE minedcard ADD COLUMN tags TEXT"))
+    except Exception as e:
+        print(f"[bold yellow]Warning:[/bold yellow] Failed to run database migration: {e}")
 
 def get_session():
     """Returns a new database session."""

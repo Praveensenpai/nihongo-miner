@@ -26,7 +26,7 @@ from src.jotoba import get_pitch_accent, prefetch_pitch_accents
 app = typer.Typer(rich_markup_mode="rich")
 
 
-from src.utils import katakana_to_hiragana, furigana_sentence
+from src.utils import katakana_to_hiragana, furigana_sentence, clean_tag_from_path
 
 GRAMMAR_DICT: Dict[str, Dict[str, str]] = {
     "〜てしまう": {
@@ -1073,6 +1073,7 @@ class CliApp:
         self.anki = AnkiClient()
         self.jpdb_url = jpdb_url
         self.jpdb_vocab: Dict[str, Any] = {}
+        self.source_tag = clean_tag_from_path(self.subtitle_path) if subtitle_path else None
 
     def _select_subtitle_file(self) -> pathlib.Path:
         # GUI picker handles this now, but keep fallback
@@ -1135,6 +1136,7 @@ class CliApp:
                 print(f"[bold cyan]Found {len(unsynced)} unsynced cards. Syncing to Anki...[/bold cyan]")
                 synced_count = 0
                 for card in unsynced:
+                    tags = card.tags.split(",") if card.tags else None
                     note_id = self.anki.add_card(
                         card.sentence,
                         card.target_word,
@@ -1146,6 +1148,7 @@ class CliApp:
                         adjusted_score=card.adjusted_score,
                         known_words=card.known_words,
                         unknown_words=card.unknown_words,
+                        tags=tags,
                     )
                     if note_id:
                         card.anki_note_id = note_id
@@ -1486,6 +1489,7 @@ class CliApp:
         unknown_words: str | None = None,
     ) -> None:
         anki_note_id = None
+        tags = [self.source_tag] if self.source_tag else None
         if self.anki.is_running():
             anki_note_id = self.anki.add_card(
                 sentence,
@@ -1498,6 +1502,7 @@ class CliApp:
                 adjusted_score=adjusted_score,
                 known_words=known_words,
                 unknown_words=unknown_words,
+                tags=tags,
             )
             if anki_note_id:
                 if anki_note_id == -2:
@@ -1532,6 +1537,7 @@ class CliApp:
                 adjusted_score=adjusted_score,
                 known_words=known_words,
                 unknown_words=unknown_words,
+                tags=",".join(tags) if tags else None,
             )
             session.add(card)
             session.commit()
