@@ -1,6 +1,7 @@
 import asyncio
 import typer
 from rich import print
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -1609,23 +1610,38 @@ def run_app(
                 date_str = dt.strftime("%Y-%m-%d") if dt else "Unknown Date"
                 grouped[date_str].append(card.target_word)
             
+            total_cards = sum(len(w) for w in grouped.values())
+            total_days = len(grouped)
             sorted_dates = sorted(grouped.keys(), reverse=True)
             
             console = Console()
-            table = Table(title="[bold yellow]Mining History per Day[/bold yellow]")
-            table.add_column("Date", style="cyan", width=12)
-            table.add_column("Cards Mined", style="magenta", justify="right", width=12)
-            table.add_column("Mined Words", style="green")
+            table = Table(
+                box=box.ROUNDED,
+                header_style="bold magenta",
+                border_style="dim cyan"
+            )
+            table.add_column("Date", style="bold cyan", width=12)
+            table.add_column("Cards Mined", style="bold green", justify="right", width=12)
+            table.add_column("Mined Words", style="dim white")
             
             for date_str in sorted_dates:
                 words_list = grouped[date_str]
                 words_str = ", ".join(words_list)
-                if len(words_str) > 60:
-                    words_str = words_str[:57] + "..."
-                table.add_row(date_str, str(len(words_list)), words_str)
+                if len(words_str) > 80:
+                    words_str = words_str[:77] + "..."
+                table.add_row(date_str, f"[bold]{len(words_list)}[/bold]", words_str)
                 
+            summary_panel = Panel(
+                f"[bold cyan]Total Cards Mined:[/bold cyan] [bold green]{total_cards}[/bold green] | "
+                f"[bold cyan]Total Days Active:[/bold cyan] [bold green]{total_days}[/bold green]",
+                title="[bold yellow]Mining Stats Summary[/bold yellow]",
+                border_style="yellow",
+                expand=False
+            )
+            
             console.print()
             console.print(table)
+            console.print(summary_panel)
             console.print()
         return
 
