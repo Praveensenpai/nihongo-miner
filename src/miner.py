@@ -1,3 +1,4 @@
+import asyncio
 import typer
 from rich import print
 from rich.console import Console
@@ -20,7 +21,7 @@ from sudachipy import dictionary, tokenizer
 from src.database import KnownWord, FrequencyWord, MinedCard, MiningSession, get_session, create_db_and_tables
 from src.anki import AnkiClient
 from src.jpdb import scrape_jpdb, get_jpdb_global_rank, list_cached_jpdb
-from src.jotoba import get_pitch_accent
+from src.jotoba import get_pitch_accent, prefetch_pitch_accents
 
 app = typer.Typer(rich_markup_mode="rich")
 
@@ -773,13 +774,13 @@ class DictLookup:
     def __init__(self) -> None:
         self.jam = Jamdict()
 
-    def get_definition(self, word: str, reading: str | None = None) -> Tuple[str, str]:
+    def _get_best_entry_and_kana(self, word: str, reading: str | None = None) -> Tuple[Any, str]:
         if word in GRAMMAR_DICT:
-            return GRAMMAR_DICT[word]["definition"], GRAMMAR_DICT[word]["reading"]
+            return None, GRAMMAR_DICT[word]["reading"]
         try:
             result = self.jam.lookup(word)
             if not result.entries:
-                return "No definition found.", ""
+                return None, ""
             
             # If reading is provided, check if any entry has a matching kana form.
             # If so, we only consider entries where the reading matches.
@@ -836,6 +837,17 @@ class DictLookup:
             entry = best_entry
             # Prefer the matching reading if available
             kana = reading if (reading and any(kf.text == reading for kf in entry.kana_forms)) else (entry.kana_forms[0].text if entry.kana_forms else "")
+            return entry, kana
+        except Exception:
+            return None, ""
+
+    def get_definition(self, word: str, reading: str | None = None) -> Tuple[str, str]:
+        if word in GRAMMAR_DICT:
+            return GRAMMAR_DICT[word]["definition"], GRAMMAR_DICT[word]["reading"]
+        try:
+            entry, kana = self._get_best_entry_and_kana(word, reading)
+            if not entry:
+                return "No definition found.", kana
             
             if not entry.senses:
                 return "No senses found.", kana
@@ -1244,8 +1256,29 @@ class CliApp:
             print("\n[bold red]Operation cancelled.[/bold red]")
             return
 
+        asyncio.run(self._async_mine(candidates, target_mined, knowledge, lookup))
+
+    async def _async_mine(
+        self,
+        candidates: List[CandidateSentence],
+        target_mined: int,
+        knowledge: KnowledgeModel,
+        lookup: DictLookup
+    ) -> None:
         mined_count = 0
         
+        # Prefetch pitch accents for the first 3 unknown words
+        first_targets = []
+        for cand in candidates:
+            if len(first_targets) >= 3:
+                break
+            if not knowledge.is_known(cand.unknown_word):
+                _, kana = lookup._get_best_entry_and_kana(cand.unknown_word, getattr(cand, "unknown_word_reading", None))
+                if kana:
+                    first_targets.append((cand.unknown_word, kana))
+        if first_targets:
+            asyncio.create_task(prefetch_pitch_accents(first_targets))
+
         for idx, cand in enumerate(candidates, 1):
             if mined_count >= target_mined:
                 print(f"\n🎉 [bold green]You've successfully mined {target_mined} cards! Great session.[/bold green]")
@@ -1253,6 +1286,18 @@ class CliApp:
                 
             if knowledge.is_known(cand.unknown_word):
                 continue
+
+            # Prefetch pitch accents for the next 3 unknown words
+            next_targets = []
+            for next_cand in candidates[idx:]:
+                if len(next_targets) >= 3:
+                    break
+                if not knowledge.is_known(next_cand.unknown_word):
+                    _, kana = lookup._get_best_entry_and_kana(next_cand.unknown_word, getattr(next_cand, "unknown_word_reading", None))
+                    if kana:
+                        next_targets.append((next_cand.unknown_word, kana))
+            if next_targets:
+                asyncio.create_task(prefetch_pitch_accents(next_targets))
                 
             if self.jpdb_vocab and cand.unknown_word in self.jpdb_vocab:
                 definition = self.jpdb_vocab[cand.unknown_word]["definition"]
@@ -1302,7 +1347,8 @@ class CliApp:
             ))
             print()
             
-            choice = input("Mine this card? (y/n/q to quit): ").strip().lower()
+            choice = await asyncio.to_thread(input, "Mine this card? (y/n/q to quit): ")
+            choice = choice.strip().lower()
             if choice == "y":
                 added_count = self._mine_candidate(knowledge, cand, kana, definition)
                 mined_count += 1
