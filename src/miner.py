@@ -1580,9 +1580,55 @@ def run_app(
         False,
         "--pull-known",
         help="Pull existing cards from your configured Anki deck as known words and exit."
+    ),
+    history: bool = typer.Option(
+        False,
+        "--history",
+        help="Display cards mined per day and exit."
     )
 ) -> None:
     create_db_and_tables()
+    if history:
+        with get_session() as session:
+            cards = session.exec(select(MinedCard)).all()
+            if not cards:
+                print("[bold yellow]No cards have been mined yet.[/bold yellow]")
+                return
+            
+            from collections import defaultdict
+            from datetime import datetime
+            
+            grouped = defaultdict(list)
+            for card in cards:
+                dt = card.created_at
+                if isinstance(dt, str):
+                    try:
+                        dt = datetime.strptime(dt.split(".")[0], "%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        dt = None
+                date_str = dt.strftime("%Y-%m-%d") if dt else "Unknown Date"
+                grouped[date_str].append(card.target_word)
+            
+            sorted_dates = sorted(grouped.keys(), reverse=True)
+            
+            console = Console()
+            table = Table(title="[bold yellow]Mining History per Day[/bold yellow]")
+            table.add_column("Date", style="cyan", width=12)
+            table.add_column("Cards Mined", style="magenta", justify="right", width=12)
+            table.add_column("Mined Words", style="green")
+            
+            for date_str in sorted_dates:
+                words_list = grouped[date_str]
+                words_str = ", ".join(words_list)
+                if len(words_str) > 60:
+                    words_str = words_str[:57] + "..."
+                table.add_row(date_str, str(len(words_list)), words_str)
+                
+            console.print()
+            console.print(table)
+            console.print()
+        return
+
     if pull_known:
         cli_app = CliApp("")
         if cli_app.anki.is_running():

@@ -1,3 +1,4 @@
+from datetime import datetime
 import pathlib
 import sys
 from typing import Optional
@@ -34,6 +35,7 @@ class MinedCard(SQLModel, table=True):
     known_words: Optional[str] = Field(default=None)
     unknown_words: Optional[str] = Field(default=None)
     tags: Optional[str] = Field(default=None)
+    created_at: Optional[datetime] = Field(default_factory=datetime.now)
 
 class MiningSession(SQLModel, table=True):
     """Saved history of mined subtitle and video files."""
@@ -74,6 +76,9 @@ def create_db_and_tables():
             columns = [row[1] for row in result.fetchall()]
             if "tags" not in columns:
                 connection.execute(text("ALTER TABLE minedcard ADD COLUMN tags TEXT"))
+            if "created_at" not in columns:
+                connection.execute(text("ALTER TABLE minedcard ADD COLUMN created_at DATETIME"))
+                connection.execute(text("UPDATE minedcard SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"))
     except Exception as e:
         print(f"[bold yellow]Warning:[/bold yellow] Failed to run database migration: {e}")
 
