@@ -1232,6 +1232,17 @@ class CliApp:
         
         analyzer = TextAnalyzer()
         knowledge = KnowledgeModel()
+        
+        if self.anki.is_running():
+            print(f"[bold cyan]Syncing known words from Anki deck '{self.anki.deck_name}'...[/bold cyan]")
+            anki_words = self.anki.get_deck_words()
+            if anki_words:
+                added = knowledge.add_known_words(anki_words)
+                if added > 0:
+                    print(f"  [bold green]-> Found and added {added} new known word(s) from Anki deck '{self.anki.deck_name}'.[/bold green]")
+                else:
+                    print(f"  [bold green]-> All {len(anki_words)} words from Anki deck are already in database.[/bold green]")
+
         frequency = WordFrequency()
         engine = MiningEngine(analyzer, knowledge, frequency, jpdb_vocab=self.jpdb_vocab)
         
@@ -1558,9 +1569,30 @@ def run_app(
         False,
         "--sync",
         help="Sync pending local cards to Anki and exit."
+    ),
+    pull_known: bool = typer.Option(
+        False,
+        "--pull-known",
+        help="Pull existing cards from your configured Anki deck as known words and exit."
     )
 ) -> None:
     create_db_and_tables()
+    if pull_known:
+        cli_app = CliApp("")
+        if cli_app.anki.is_running():
+            print("[bold green]Connected to Anki (AnkiConnect detected).[/bold green]")
+            print(f"[bold cyan]Pulling known words from Anki deck '{cli_app.anki.deck_name}'...[/bold cyan]")
+            anki_words = cli_app.anki.get_deck_words()
+            if anki_words:
+                knowledge = KnowledgeModel()
+                added = knowledge.add_known_words(anki_words)
+                print(f"  [bold green]-> Successfully imported {added} new known word(s) from Anki deck '{cli_app.anki.deck_name}'.[/bold green]")
+            else:
+                print(f"[bold yellow]No words found in Anki deck '{cli_app.anki.deck_name}'.[/bold yellow]")
+        else:
+            print("[bold red]Error: Anki not detected. Please make sure Anki is open and AnkiConnect is installed.[/bold red]")
+        return
+
     if sync:
         create_db_and_tables()
         cli_app = CliApp("")

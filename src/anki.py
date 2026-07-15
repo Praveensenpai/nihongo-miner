@@ -148,3 +148,45 @@ class AnkiClient:
                 return -2
             print(f"[bold yellow]Warning:[/bold yellow] Failed to add card to Anki: {e}")
             return None
+
+    def get_deck_words(self) -> list[str]:
+        """Retrieves target words from all cards/notes in the configured deck."""
+        try:
+            # Query notes in the deck
+            note_ids = self._invoke("findNotes", query=f'deck:"{self.deck_name}"')
+            if not note_ids:
+                return []
+            
+            # Retrieve note information in batches
+            notes = self._invoke("notesInfo", notes=note_ids)
+            words = []
+            import re
+            for note in notes:
+                fields = note.get("fields", {})
+                
+                # Try to extract the word
+                word = None
+                for field_name in ["word", "Word", "target", "Target", "Target Word", "TargetWord"]:
+                    if field_name in fields:
+                        val = fields[field_name].get("value", "").strip()
+                        if val:
+                            word = re.sub(r"<[^>]+>", "", val).strip()
+                            break
+                            
+                if not word:
+                    front_field = fields.get("Front") or fields.get("front")
+                    if front_field:
+                        val = front_field.get("value", "").strip()
+                        match = re.search(r"<b[^>]*>(.*?)</b>", val) or re.search(r"<strong[^>]*>(.*?)</strong>", val)
+                        if match:
+                            word = match.group(1).strip()
+                            word = re.sub(r"<[^>]+>", "", word).strip()
+                        else:
+                            word = re.sub(r"<[^>]+>", "", val).strip()
+                            
+                if word:
+                    words.append(word)
+            return words
+        except Exception as e:
+            print(f"[bold yellow]Warning:[/bold yellow] Failed to load known words from Anki deck '{self.deck_name}': {e}")
+            return []
