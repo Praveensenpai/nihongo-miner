@@ -1239,9 +1239,9 @@ class CliApp:
             if anki_words:
                 added = knowledge.add_known_words(anki_words)
                 if added > 0:
-                    print(f"  [bold green]-> Found and added {added} new known word(s) from Anki deck '{self.anki.deck_name}'.[/bold green]")
+                    print(f"  [bold green]-> Found {len(anki_words)} word(s) in Anki deck '{self.anki.deck_name}' ({added} new known word(s) added).[/bold green]")
                 else:
-                    print(f"  [bold green]-> All {len(anki_words)} words from Anki deck are already in database.[/bold green]")
+                    print(f"  [bold green]-> All {len(anki_words)} word(s) from Anki deck are already in database.[/bold green]")
 
         frequency = WordFrequency()
         engine = MiningEngine(analyzer, knowledge, frequency, jpdb_vocab=self.jpdb_vocab)
@@ -1586,7 +1586,7 @@ def run_app(
             if anki_words:
                 knowledge = KnowledgeModel()
                 added = knowledge.add_known_words(anki_words)
-                print(f"  [bold green]-> Successfully imported {added} new known word(s) from Anki deck '{cli_app.anki.deck_name}'.[/bold green]")
+                print(f"  [bold green]-> Successfully imported {len(anki_words)} word(s) from Anki deck '{cli_app.anki.deck_name}' ({added} new known word(s) added).[/bold green]")
             else:
                 print(f"[bold yellow]No words found in Anki deck '{cli_app.anki.deck_name}'.[/bold yellow]")
         else:
