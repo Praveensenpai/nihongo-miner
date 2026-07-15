@@ -13,3 +13,6 @@ wheels/
 *.db
 *.db-journal
 *.db-wal
+
+# JPDB cache
+.jpdb_cache/
