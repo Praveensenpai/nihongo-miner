@@ -22,7 +22,9 @@ def _parse_jpdb_page(html: str) -> List[Dict[str, Any]]:
         a = entry.css_first("div.vocabulary-spelling a")
         if not a:
             continue
-        href = a.attributes.get("href", "")
+        href = a.attributes.get("href")
+        if href is None:
+            continue
         match = re.match(r"^/vocabulary/\d+/([^#]+)#a$", href)
         if not match:
             continue
@@ -79,6 +81,7 @@ async def _fetch_page(client: httpx.AsyncClient, url: str, offset: int, sem: asy
                     print(f"[bold yellow]Warning:[/bold yellow] Error fetching JPDB offset {offset} after 3 attempts: [dim]{type(e).__name__}[/dim]: {e}")
                     return None
                 await asyncio.sleep(0.5)
+        return None
 
 
 async def _fetch_remaining_pages(base_url: str, offsets: List[int]) -> List[str | None]:
@@ -120,7 +123,7 @@ def scrape_jpdb(url: str) -> List[Dict[str, Any]]:
     print(f"[bold cyan]Fetching JPDB vocabulary list from {base_url}...[/bold cyan]")
 
     # Define a temporary helper to run async fetch for page 0
-    async def fetch_first_page():
+    async def fetch_first_page() -> str | None:
         sem = asyncio.Semaphore(1)
         async with httpx.AsyncClient(headers=_HEADERS) as client:
             return await _fetch_page(client, base_url, 0, sem)

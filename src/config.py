@@ -1,10 +1,9 @@
-import os
 import pathlib
 import sys
-from typing import List, Dict, Any
+from typing import List
 
 try:
-    import tomllib  # type: ignore # Available in Python 3.11+
+    import tomllib  # Available in Python 3.11+
 except ImportError:
     # Fallback for Python < 3.11 if needed, though project requires >=3.14
     import pip._vendor.tomli as tomllib  # type: ignore

@@ -13,21 +13,19 @@ import pathlib
 import re
 import subprocess
 import os
-from typing import Dict, Iterable, List, Sequence, Set, Tuple, Any
+from typing import Dict, Iterable, List, Sequence, Set, Tuple, Any, Optional
 
-from jamdict import Jamdict
-from sqlmodel import select
-from sudachipy import dictionary, tokenizer
+from jamdict import Jamdict  # type: ignore[import-untyped]
+from sqlmodel import select, desc
+from sudachipy import dictionary, tokenizer  # type: ignore[import-untyped]
 
 from src.database import KnownWord, FrequencyWord, MinedCard, MiningSession, get_session, create_db_and_tables
 from src.anki import AnkiClient
 from src.jpdb import scrape_jpdb, get_jpdb_global_rank, list_cached_jpdb
 from src.jotoba import get_pitch_accent, prefetch_pitch_accents
+from src.utils import katakana_to_hiragana, clean_tag_from_path
 
 app = typer.Typer(rich_markup_mode="rich")
-
-
-from src.utils import katakana_to_hiragana, furigana_sentence, clean_tag_from_path
 
 GRAMMAR_DICT: Dict[str, Dict[str, str]] = {
     "〜てしまう": {
@@ -540,8 +538,8 @@ class KnowledgeModel:
     
     def __init__(self, known_path: Any = None) -> None:
         self.known_path = known_path
+        self.known_words: Set[str] = set()
         if known_path is not None:
-            self.known_words = set()
             path = pathlib.Path(known_path)
             if path.exists():
                 with open(path, "r", encoding="utf-8") as f:
@@ -549,7 +547,7 @@ class KnowledgeModel:
         else:
             with get_session() as session:
                 statement = select(KnownWord.word)
-                self.known_words: Set[str] = set(session.exec(statement).all())
+                self.known_words = set(session.exec(statement).all())
 
     def is_known(self, word: str) -> bool:
         return word in self.known_words
@@ -599,22 +597,21 @@ class WordFrequency:
     """Looks up frequency ranks for Japanese words using SQLite."""
     
     def __init__(self, freq_path: Any = None) -> None:
+        self.freq_map: Dict[str, int] = {}
         if freq_path is not None:
             path = pathlib.Path(freq_path)
             if path.exists():
                 with open(path, "r", encoding="utf-8") as f:
                     self.freq_map = json.load(f)
-            else:
-                self.freq_map = {}
         else:
             with get_session() as session:
                 statement = select(FrequencyWord.word, FrequencyWord.rank)
                 results = session.exec(statement).all()
-                self.freq_map: Dict[str, int] = {word: rank for word, rank in results}
+                self.freq_map = {word: rank for word, rank in results}
 
     def get_rank(self, word: str) -> int:
         # Default to a high rank (100000) for rare/unlisted words
-        return self.freq_map.get(word, 100000)
+        return int(self.freq_map.get(word, 100000))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -649,7 +646,7 @@ class MiningEngine:
 
     def find_candidates(self, lines: List[SubtitleLine]) -> List[CandidateSentence]:
         # Pass 1: Build episode frequency map
-        episode_freq = {}
+        episode_freq: Dict[str, int] = {}
         for line in lines:
             tokens = self.analyzer.extract_content_tokens(line.text)
             for token in tokens:
@@ -658,7 +655,7 @@ class MiningEngine:
         # Pass 2: Evaluate candidates
         candidates: List[CandidateSentence] = []
         seen_sentences = set()
-        best_candidate_for_word = {}
+        best_candidate_for_word: Dict[str, CandidateSentence] = {}
         for line in lines:
             cleaned_text = line.text.strip()
             if not cleaned_text:
@@ -900,7 +897,7 @@ def prompt_pre_add_known_words(
     # Interactive selection
     cursor = 0
     scroll_offset = 0
-    selected = set()
+    selected: Set[int] = set()
 
     import sys
     import tty
@@ -912,7 +909,7 @@ def prompt_pre_add_known_words(
     from rich.console import Group
     from rich.text import Text
 
-    def get_key():
+    def get_key() -> Optional[str]:
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
         try:
@@ -938,7 +935,7 @@ def prompt_pre_add_known_words(
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
         return None
 
-    def draw_menu(console):
+    def draw_menu(console: Console) -> None:
         console.clear()
         console.print("[bold yellow]Interactive Known Word Selection[/bold yellow]")
         console.print("Use [cyan]Arrow Keys[/cyan] to navigate, [cyan]Space[/cyan] to toggle selection, [cyan]Enter[/cyan] to submit, [cyan]Q/Esc[/cyan] to skip.")
@@ -990,7 +987,7 @@ def prompt_pre_add_known_words(
         bottom_indicator = Text("   ▼  More words below  ▼", style="bold yellow") if end_row < total_rows else Text("")
         status_text = Text(f"   Showing words {start_row * num_cols + 1} - {min(len(choices), end_row * num_cols)} of {len(choices)}", style="dim cyan")
         
-        group_elements = []
+        group_elements: List[Any] = []
         if scroll_offset > 0:
             group_elements.append(top_indicator)
         group_elements.append(table)
@@ -1283,7 +1280,7 @@ class CliApp:
         mined_count = 0
         
         # Prefetch pitch accents for the first 3 unknown words
-        first_targets = []
+        first_targets: List[Tuple[str, str]] = []
         for cand in candidates:
             if len(first_targets) >= 3:
                 break
@@ -1303,7 +1300,7 @@ class CliApp:
                 continue
 
             # Prefetch pitch accents for the next 3 unknown words
-            next_targets = []
+            next_targets: List[Tuple[str, str]] = []
             for next_cand in candidates[idx:]:
                 if len(next_targets) >= 3:
                     break
@@ -1397,7 +1394,7 @@ class CliApp:
             # Parse subtitle timestamp: "00:01:23,456 --> 00:01:25,789"
             ts = candidate.sentence.timestamp
             if ts and "-->" in ts:
-                import ffmpeg
+                import ffmpeg  # type: ignore[import-untyped]
                 start_ts, end_ts = [t.strip().replace(',', '.') for t in ts.split("-->")]
                 
                 # Extract audio
@@ -1430,6 +1427,7 @@ class CliApp:
                             return float(parts[0]) * 60 + float(parts[1])
                         return float(parts[0])
                     
+                    mid_sec: float | str
                     try:
                         start_sec = ts_to_seconds(start_ts)
                         end_sec = ts_to_seconds(end_ts)
@@ -1804,9 +1802,9 @@ def run_app(
         choices = matches
         cursor = 0
         scroll_offset = 0
-        selected: set = set()
+        selected: Set[int] = set()
 
-        def get_key_forget():
+        def get_key_forget() -> Optional[str]:
             fd = sys.stdin.fileno()
             old = termios.tcgetattr(fd)
             try:
@@ -1832,7 +1830,7 @@ def run_app(
                 termios.tcsetattr(fd, termios.TCSADRAIN, old)
             return None
 
-        def draw_forget(console):
+        def draw_forget(console: Console) -> None:
             console.clear()
             console.print("[bold red]Forget Words[/bold red]  [dim](Space = toggle, Enter = confirm, Q = cancel)[/dim]")
             console.print()
@@ -1934,12 +1932,12 @@ def run_app(
     loaded_session = False
     
     with get_session() as session:
-        db_history = session.exec(select(MiningSession).order_by(MiningSession.id.desc())).all()
-        history = [{"id": h.id, "subtitle_path": h.subtitle_path, "video_path": h.video_path} for h in db_history]
+        db_history = session.exec(select(MiningSession).order_by(desc(MiningSession.id))).all()
+        sess_history: List[Dict[str, Any]] = [{"id": h.id, "subtitle_path": h.subtitle_path, "video_path": h.video_path} for h in db_history]
             
-    valid_sessions = []
+    valid_sessions: List[Dict[str, Any]] = []
     invalid_found = False
-    for sess in history:
+    for sess in sess_history:
         sub = sess.get("subtitle_path")
         vid = sess.get("video_path")
         sub_exists = sub and pathlib.Path(sub).exists()
@@ -1981,8 +1979,8 @@ def run_app(
             
             if choice_num != new_sess_num:
                 selected_sess = valid_sessions[choice_num - 1]
-                subtitle_path = selected_sess["subtitle_path"]
-                video_path = selected_sess.get("video_path") or ""
+                subtitle_path = str(selected_sess["subtitle_path"])
+                video_path = str(selected_sess.get("video_path") or "")
                 loaded_session = True
                 
                 # Move this session to the top (MRU)
@@ -2064,7 +2062,7 @@ def run_app(
                 session.commit()
                 
                 # Keep only last 10
-                all_sessions = session.exec(select(MiningSession).order_by(MiningSession.id.desc())).all()
+                all_sessions = session.exec(select(MiningSession).order_by(desc(MiningSession.id))).all()
                 if len(all_sessions) > 10:
                     for s in all_sessions[10:]:
                         session.delete(s)
@@ -2079,9 +2077,9 @@ def run_app(
 
     if cached_entries:
         choices = []
-        for e in cached_entries:
-            label = e['title'] if e['title'] else e['url']
-            choices.append(f"{label}  ({e['count']} words)")
+        for entry in cached_entries:
+            label = entry['title'] if entry['title'] else entry['url']
+            choices.append(f"{label}  ({entry['count']} words)")
         choices += [_NEW_URL, _SKIP]
 
         console = Console()

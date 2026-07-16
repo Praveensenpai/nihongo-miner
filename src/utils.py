@@ -1,5 +1,7 @@
-from typing import List
-from sudachipy import dictionary, tokenizer
+import pathlib
+from typing import List, Union
+from sudachipy import dictionary, tokenizer  # type: ignore[import-untyped]
+
 
 def katakana_to_hiragana(text: str) -> str:
     """Converts a string of Katakana characters to Hiragana."""
@@ -39,9 +41,8 @@ def furigana_sentence(text: str) -> str:
     return "".join(parts)
 
 
-def clean_tag_from_path(path) -> str:
+def clean_tag_from_path(path: Union[str, pathlib.Path]) -> str:
     """Generates a clean, valid Anki tag from a file path."""
-    import pathlib
     import re
     p = pathlib.Path(path)
     stem = p.stem.strip()

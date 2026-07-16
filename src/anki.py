@@ -146,7 +146,8 @@ class AnkiClient:
         }
         
         try:
-            return self._invoke("addNote", note=note)
+            note_id = self._invoke("addNote", note=note)
+            return int(note_id) if note_id is not None else None
         except ConnectionError:
             return None
         except Exception as e:

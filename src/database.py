@@ -64,7 +64,7 @@ sqlite_url = f"sqlite:///{DB_FILE.absolute()}"
 
 engine = create_engine(sqlite_url, echo=False)
 
-def create_db_and_tables():
+def create_db_and_tables() -> None:
     """Initializes the database schema."""
     DB_FILE.parent.mkdir(parents=True, exist_ok=True)
     SQLModel.metadata.create_all(engine)
@@ -82,6 +82,6 @@ def create_db_and_tables():
     except Exception as e:
         print(f"[bold yellow]Warning:[/bold yellow] Failed to run database migration: {e}")
 
-def get_session():
+def get_session() -> Session:
     """Returns a new database session."""
     return Session(engine)

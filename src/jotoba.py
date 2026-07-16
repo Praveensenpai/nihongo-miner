@@ -29,7 +29,7 @@ def get_pitch_accent(word: str, reading: str) -> str:
         )
         cached = session.exec(statement).first()
         if cached:
-            return cached.pitch
+            return str(cached.pitch)
 
         url = "https://jotoba.de/api/search/words"
         data = json.dumps({"query": word, "language": "English"}).encode("utf-8")
@@ -39,7 +39,6 @@ def get_pitch_accent(word: str, reading: str) -> str:
                 res = json.loads(response.read().decode())
                 
                 pitch_str = ""
-                found = False
                 if res.get("words"):
                     for w in res["words"]:
                         w_kana = w["reading"]["kana"]
@@ -51,7 +50,6 @@ def get_pitch_accent(word: str, reading: str) -> str:
                                     mora_count = count_morae(part["part"])
                                     pitch_char = "H" if part["high"] else "L"
                                     pitch_str += pitch_char * mora_count
-                                found = True
                                 break
                             
                 # Cache the result (even if empty string to avoid repeated API calls for words with no pitch)
