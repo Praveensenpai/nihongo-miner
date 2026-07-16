@@ -15,17 +15,16 @@ def count_morae(text: str) -> int:
 
 def get_pitch_accent(word: str, reading: str) -> str:
     """Queries the Jotoba API for pitch accent data of a specific word and reading.
-    
+
     Returns a string of 'H' and 'L' representing High and Low pitch accents,
     or an empty string if not found or on error.
     """
     if not word or not reading:
         return ""
-        
+
     with get_session() as session:
         statement = select(PitchAccentCache).where(
-            PitchAccentCache.word == word,
-            PitchAccentCache.reading == reading
+            PitchAccentCache.word == word, PitchAccentCache.reading == reading
         )
         cached = session.exec(statement).first()
         if cached:
@@ -33,11 +32,13 @@ def get_pitch_accent(word: str, reading: str) -> str:
 
         url = "https://jotoba.de/api/search/words"
         data = json.dumps({"query": word, "language": "English"}).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}
+        )
         try:
             with urllib.request.urlopen(req, timeout=1.5) as response:
                 res = json.loads(response.read().decode())
-                
+
                 pitch_str = ""
                 if res.get("words"):
                     for w in res["words"]:
@@ -51,12 +52,14 @@ def get_pitch_accent(word: str, reading: str) -> str:
                                     pitch_char = "H" if part["high"] else "L"
                                     pitch_str += pitch_char * mora_count
                                 break
-                            
+
                 # Cache the result (even if empty string to avoid repeated API calls for words with no pitch)
-                new_cache = PitchAccentCache(word=word, reading=reading, pitch=pitch_str)
+                new_cache = PitchAccentCache(
+                    word=word, reading=reading, pitch=pitch_str
+                )
                 session.add(new_cache)
                 session.commit()
-                
+
                 return pitch_str
         except Exception:
             return ""
@@ -74,8 +77,7 @@ async def prefetch_pitch_accents(words_and_readings: list[tuple[str, str]]) -> N
             if not word or not reading:
                 continue
             statement = select(PitchAccentCache).where(
-                PitchAccentCache.word == word,
-                PitchAccentCache.reading == reading
+                PitchAccentCache.word == word, PitchAccentCache.reading == reading
             )
             cached = session.exec(statement).first()
             if not cached:
@@ -84,7 +86,9 @@ async def prefetch_pitch_accents(words_and_readings: list[tuple[str, str]]) -> N
     if not to_fetch:
         return
 
-    async def fetch_one(client: httpx.AsyncClient, word: str, reading: str) -> tuple[str, str, str]:
+    async def fetch_one(
+        client: httpx.AsyncClient, word: str, reading: str
+    ) -> tuple[str, str, str]:
         url = "https://jotoba.de/api/search/words"
         payload = {"query": word, "language": "English"}
         try:
@@ -117,10 +121,11 @@ async def prefetch_pitch_accents(words_and_readings: list[tuple[str, str]]) -> N
     with get_session() as session:
         for word, reading, pitch_str in results:
             statement = select(PitchAccentCache).where(
-                PitchAccentCache.word == word,
-                PitchAccentCache.reading == reading
+                PitchAccentCache.word == word, PitchAccentCache.reading == reading
             )
             if not session.exec(statement).first():
-                new_cache = PitchAccentCache(word=word, reading=reading, pitch=pitch_str)
+                new_cache = PitchAccentCache(
+                    word=word, reading=reading, pitch=pitch_str
+                )
                 session.add(new_cache)
         session.commit()

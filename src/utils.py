@@ -6,13 +6,16 @@ from sudachipy import dictionary, tokenizer  # type: ignore[import-untyped]
 def katakana_to_hiragana(text: str) -> str:
     """Converts a string of Katakana characters to Hiragana."""
     return "".join(
-        chr(ord(char) - 96) if 0x30A1 <= ord(char) <= 0x30F6 else char
-        for char in text
+        chr(ord(char) - 96) if 0x30A1 <= ord(char) <= 0x30F6 else char for char in text
     )
+
 
 def _contains_kanji(text: str) -> bool:
     """Returns True if the text contains at least one CJK kanji character."""
-    return any(0x4E00 <= ord(ch) <= 0x9FFF or 0x3400 <= ord(ch) <= 0x4DBF for ch in text)
+    return any(
+        0x4E00 <= ord(ch) <= 0x9FFF or 0x3400 <= ord(ch) <= 0x4DBF for ch in text
+    )
+
 
 def furigana_sentence(text: str) -> str:
     """
@@ -31,7 +34,9 @@ def furigana_sentence(text: str) -> str:
             continue
         try:
             katakana_reading = token.reading_form()
-            hiragana_reading = katakana_to_hiragana(katakana_reading) if katakana_reading else ""
+            hiragana_reading = (
+                katakana_to_hiragana(katakana_reading) if katakana_reading else ""
+            )
         except Exception:
             hiragana_reading = ""
         if hiragana_reading and hiragana_reading != surface:
@@ -44,6 +49,7 @@ def furigana_sentence(text: str) -> str:
 def clean_tag_from_path(path: Union[str, pathlib.Path]) -> str:
     """Generates a clean, valid Anki tag from a file path."""
     import re
+
     p = pathlib.Path(path)
     stem = p.stem.strip()
     if stem.endswith("_synced"):

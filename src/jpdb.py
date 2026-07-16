@@ -45,12 +45,14 @@ def _parse_jpdb_page(html: str) -> List[Dict[str, Any]]:
                     rank_in_deck = int(txt)
                 break
 
-        words.append({
-            "word": word,
-            "definition": definition,
-            "tags": tags,
-            "rank_in_deck": rank_in_deck,
-        })
+        words.append(
+            {
+                "word": word,
+                "definition": definition,
+                "tags": tags,
+                "rank_in_deck": rank_in_deck,
+            }
+        )
 
     return words
 
@@ -68,7 +70,9 @@ def _extract_title(html: str) -> str:
     return raw.strip()
 
 
-async def _fetch_page(client: httpx.AsyncClient, url: str, offset: int, sem: asyncio.Semaphore) -> str | None:
+async def _fetch_page(
+    client: httpx.AsyncClient, url: str, offset: int, sem: asyncio.Semaphore
+) -> str | None:
     """Fetch a single page with offset using httpx.AsyncClient."""
     async with sem:
         for attempt in range(3):
@@ -78,7 +82,9 @@ async def _fetch_page(client: httpx.AsyncClient, url: str, offset: int, sem: asy
                 return r.text
             except Exception as e:
                 if attempt == 2:
-                    print(f"[bold yellow]Warning:[/bold yellow] Error fetching JPDB offset {offset} after 3 attempts: [dim]{type(e).__name__}[/dim]: {e}")
+                    print(
+                        f"[bold yellow]Warning:[/bold yellow] Error fetching JPDB offset {offset} after 3 attempts: [dim]{type(e).__name__}[/dim]: {e}"
+                    )
                     return None
                 await asyncio.sleep(0.5)
         return None
@@ -96,7 +102,9 @@ def get_jpdb_cache_path(url: str) -> pathlib.Path:
     cache_dir = pathlib.Path(".jpdb_cache")
     cache_dir.mkdir(exist_ok=True)
     parsed = urllib.parse.urlparse(url)
-    base_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+    base_url = urllib.parse.urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, "", "", "")
+    )
     url_hash = hashlib.md5(base_url.encode("utf-8")).hexdigest()
     return cache_dir / f"{url_hash}.json"
 
@@ -104,7 +112,9 @@ def get_jpdb_cache_path(url: str) -> pathlib.Path:
 def scrape_jpdb(url: str) -> List[Dict[str, Any]]:
     # Normalize base URL (strip query/fragment)
     parsed = urllib.parse.urlparse(url)
-    base_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+    base_url = urllib.parse.urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, "", "", "")
+    )
 
     # Check cache first
     cache_path = get_jpdb_cache_path(base_url)
@@ -113,12 +123,18 @@ def scrape_jpdb(url: str) -> List[Dict[str, Any]]:
             with open(cache_path, "r", encoding="utf-8") as f:
                 cached = json.load(f)
                 # Support both old bare-list format and new {url, words} format
-                words = cached.get("words", cached) if isinstance(cached, dict) else cached
+                words = (
+                    cached.get("words", cached) if isinstance(cached, dict) else cached
+                )
                 if isinstance(words, list) and words:
-                    print(f" [bold green]->[/bold green] Found cached JPDB list ([bold cyan]{len(words)}[/bold cyan] words). Using cached data.")
+                    print(
+                        f" [bold green]->[/bold green] Found cached JPDB list ([bold cyan]{len(words)}[/bold cyan] words). Using cached data."
+                    )
                     return words
         except Exception as e:
-            print(f"[bold yellow]Warning:[/bold yellow] Failed to read JPDB cache: {e}. Re-downloading...")
+            print(
+                f"[bold yellow]Warning:[/bold yellow] Failed to read JPDB cache: {e}. Re-downloading..."
+            )
 
     print(f"[bold cyan]Fetching JPDB vocabulary list from {base_url}...[/bold cyan]")
 
@@ -139,14 +155,18 @@ def scrape_jpdb(url: str) -> List[Dict[str, Any]]:
 
     total_match = re.search(r"from\s+(\d+)\s+entries", first_html)
     if not total_match:
-        print("[bold yellow]Warning:[/bold yellow] Could not parse total entry count from JPDB page.")
+        print(
+            "[bold yellow]Warning:[/bold yellow] Could not parse total entry count from JPDB page."
+        )
         total_entries = 50
     else:
         total_entries = int(total_match.group(1))
 
     offsets = list(range(0, total_entries, 50))
     total_pages = len(offsets)
-    print(f" [bold cyan]->[/bold cyan] Expecting [bold magenta]{total_entries}[/bold magenta] words across [bold magenta]{total_pages}[/bold magenta] pages.")
+    print(
+        f" [bold cyan]->[/bold cyan] Expecting [bold magenta]{total_entries}[/bold magenta] words across [bold magenta]{total_pages}[/bold magenta] pages."
+    )
 
     all_htmls: List[str | None] = [None] * total_pages
     all_htmls[0] = first_html
@@ -154,7 +174,9 @@ def scrape_jpdb(url: str) -> List[Dict[str, Any]]:
     # Fetch remaining pages concurrently
     if total_pages > 1:
         remaining_offsets = offsets[1:]
-        remaining_htmls = asyncio.run(_fetch_remaining_pages(base_url, remaining_offsets))
+        remaining_htmls = asyncio.run(
+            _fetch_remaining_pages(base_url, remaining_offsets)
+        )
         for i, html in enumerate(remaining_htmls, 1):
             all_htmls[i] = html
 
@@ -169,18 +191,31 @@ def scrape_jpdb(url: str) -> List[Dict[str, Any]]:
     parsed_count = len(all_words)
 
     if any_failed:
-        print(f"[bold red]Error: Failed to download {failed_count}/{total_pages} pages. Will NOT cache.[/bold red]")
+        print(
+            f"[bold red]Error: Failed to download {failed_count}/{total_pages} pages. Will NOT cache.[/bold red]"
+        )
     else:
         if parsed_count >= total_entries - 5:
-            print(f" [bold green]-> Success:[/bold green] parsed [bold green]{parsed_count}/{total_entries}[/bold green] words.")
+            print(
+                f" [bold green]-> Success:[/bold green] parsed [bold green]{parsed_count}/{total_entries}[/bold green] words."
+            )
             try:
                 with open(cache_path, "w", encoding="utf-8") as f:
-                    json.dump({"url": base_url, "title": title, "words": all_words}, f, ensure_ascii=False, indent=2)
+                    json.dump(
+                        {"url": base_url, "title": title, "words": all_words},
+                        f,
+                        ensure_ascii=False,
+                        indent=2,
+                    )
                 print(f" [bold blue]->[/bold blue] Cached to [dim]{cache_path}[/dim]")
             except Exception as e:
-                print(f"[bold yellow]Warning:[/bold yellow] Failed to write JPDB cache: {e}")
+                print(
+                    f"[bold yellow]Warning:[/bold yellow] Failed to write JPDB cache: {e}"
+                )
         else:
-            print(f"[bold yellow]Warning:[/bold yellow] Word count mismatch (parsed {parsed_count}/{total_entries}). Will NOT cache.")
+            print(
+                f"[bold yellow]Warning:[/bold yellow] Word count mismatch (parsed {parsed_count}/{total_entries}). Will NOT cache."
+            )
 
     return all_words
 
@@ -215,7 +250,9 @@ def list_cached_jpdb() -> List[Dict[str, Any]]:
                 url = str(path)
                 title = ""
             if isinstance(words, list) and words:
-                entries.append({"url": url, "title": title, "count": len(words), "path": path})
+                entries.append(
+                    {"url": url, "title": title, "count": len(words), "path": path}
+                )
         except Exception:
             continue
     return entries

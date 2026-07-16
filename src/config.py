@@ -20,12 +20,15 @@ CONFIG_DIR = (
 )
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
-DEFAULT_FRONT_TEMPLATE = "<div><b>{word}</b>{reading_suffix}</div><br><div>{sentence}</div>{audio}"
+DEFAULT_FRONT_TEMPLATE = (
+    "<div><b>{word}</b>{reading_suffix}</div><br><div>{sentence}</div>{audio}"
+)
 DEFAULT_BACK_TEMPLATE = "<div>{definition}</div>{image}{stats}"
+
 
 class CardConfig:
     """Configuration class for Anki card generation."""
-    
+
     def __init__(self) -> None:
         self.deck_name: str = "Japanese Mining"
         self.model_name: str = "Basic"
@@ -39,11 +42,11 @@ class CardConfig:
         if not CONFIG_FILE.exists():
             self.save_defaults()
             return
-            
+
         try:
             with open(CONFIG_FILE, "rb") as f:
                 data = tomllib.load(f)
-                
+
             anki_cfg = data.get("anki", {})
             self.deck_name = anki_cfg.get("deck_name", self.deck_name)
             self.model_name = anki_cfg.get("model_name", self.model_name)
@@ -51,7 +54,9 @@ class CardConfig:
             self.back_template = anki_cfg.get("back_template", self.back_template)
             self.tags = anki_cfg.get("tags", self.tags)
         except Exception as e:
-            print(f"[bold yellow]Warning:[/bold yellow] Failed to load configuration from {CONFIG_FILE}: {e}. Using defaults.")
+            print(
+                f"[bold yellow]Warning:[/bold yellow] Failed to load configuration from {CONFIG_FILE}: {e}. Using defaults."
+            )
 
     def save_defaults(self) -> None:
         """Saves default configuration file."""
@@ -61,7 +66,7 @@ class CardConfig:
                 "[anki]\n"
                 f'deck_name = "{self.deck_name}"\n'
                 f'model_name = "{self.model_name}"\n'
-                f'tags = {self.tags}\n\n'
+                f"tags = {self.tags}\n\n"
                 "# Template variables available:\n"
                 "# {word}            - Target Japanese word\n"
                 "# {reading}         - Word reading/pronunciation\n"
@@ -82,7 +87,10 @@ class CardConfig:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 f.write(default_toml)
         except Exception as e:
-            print(f"[bold yellow]Warning:[/bold yellow] Failed to write default configuration: {e}")
+            print(
+                f"[bold yellow]Warning:[/bold yellow] Failed to write default configuration: {e}"
+            )
+
 
 # Global instance of configuration
 config = CardConfig()
