@@ -21,6 +21,7 @@ from sudachipy import dictionary, tokenizer  # type: ignore[import-untyped]
 
 from src.database import (
     KnownWord,
+    IgnoredWord,
     FrequencyWord,
     MinedCard,
     MiningSession,
@@ -31,6 +32,7 @@ from src.anki import AnkiClient
 from src.jpdb import scrape_jpdb, get_jpdb_global_rank, list_cached_jpdb
 from src.jotoba import get_pitch_accent, prefetch_pitch_accents
 from src.utils import katakana_to_hiragana, clean_tag_from_path
+from src.config import config
 
 app = typer.Typer(rich_markup_mode="rich")
 
@@ -591,6 +593,7 @@ class KnowledgeModel:
     def __init__(self, known_path: Any = None) -> None:
         self.known_path = known_path
         self.known_words: Set[str] = set()
+        self.ignored_words: Set[str] = set()
         if known_path is not None:
             path = pathlib.Path(known_path)
             if path.exists():
@@ -600,6 +603,8 @@ class KnowledgeModel:
             with get_session() as session:
                 statement = select(KnownWord.word)
                 self.known_words = set(session.exec(statement).all())
+                ignored_statement = select(IgnoredWord.word)
+                self.ignored_words = set(session.exec(ignored_statement).all())
 
     def is_known(self, word: str) -> bool:
         return word in self.known_words
@@ -644,6 +649,48 @@ class KnowledgeModel:
                 if db_word:
                     session.delete(db_word)
             session.commit()
+        return len(words_list)
+
+    def is_ignored(self, word: str) -> bool:
+        return word in self.ignored_words
+
+    def add_ignored(self, word: str) -> bool:
+        return self.add_ignored_words([word]) == 1
+
+    def add_ignored_words(self, words: Iterable[str]) -> int:
+        new_words = [
+            word
+            for word in _ordered_unique(words)
+            if word and word not in self.ignored_words
+        ]
+        if not new_words:
+            return 0
+
+        for word in new_words:
+            self.ignored_words.add(word)
+
+        if self.known_path is None:
+            with get_session() as session:
+                for word in new_words:
+                    session.add(IgnoredWord(word=word))
+                session.commit()
+        return len(new_words)
+
+    def remove_ignored_words(self, words: Iterable[str]) -> int:
+        words_list = [w for w in words if w in self.ignored_words]
+        if not words_list:
+            return 0
+        for word in words_list:
+            self.ignored_words.discard(word)
+        if self.known_path is None:
+            with get_session() as session:
+                for word in words_list:
+                    db_word = session.exec(
+                        select(IgnoredWord).where(IgnoredWord.word == word)
+                    ).first()
+                    if db_word:
+                        session.delete(db_word)
+                session.commit()
         return len(words_list)
 
 
@@ -726,7 +773,11 @@ class MiningEngine:
 
             content_words = tuple(token.lemma for token in tokens)
             all_unknown = _ordered_unique(
-                word for word in content_words if not self.knowledge.is_known(word)
+                word
+                for word in content_words
+                if not (
+                    self.knowledge.is_known(word) or self.knowledge.is_ignored(word)
+                )
             )
 
             # If JPDB is active, target words must be in the JPDB list.
@@ -762,7 +813,11 @@ class MiningEngine:
                     _ordered_unique(
                         word
                         for word in content_words
-                        if word != target_word and self.knowledge.is_known(word)
+                        if word != target_word
+                        and (
+                            self.knowledge.is_known(word)
+                            or self.knowledge.is_ignored(word)
+                        )
                     )
                 )
                 target_token = next((t for t in tokens if t.lemma == target_word), None)
@@ -1288,7 +1343,7 @@ class CliApp:
     def run(self) -> None:
         Console().print(
             Panel(
-                "[bold cyan]AI-Assisted Sentence Miner MVP[/bold cyan]",
+                "[bold cyan]Japanese Sentence Miner[/bold cyan]",
                 title="[bold yellow]Welcome[/bold yellow]",
                 expand=False,
                 padding=(1, 4),
@@ -1305,11 +1360,14 @@ class CliApp:
             )
 
         if self.jpdb_url:
+            import time
+            start_jpdb = time.time()
             try:
                 print(
                     f"[bold cyan]Fetching JPDB vocabulary list from {self.jpdb_url}...[/bold cyan]"
                 )
                 jpdb_words = scrape_jpdb(self.jpdb_url)
+                jpdb_elapsed = time.time() - start_jpdb
                 if jpdb_words:
                     for entry in jpdb_words:
                         word = entry["word"]
@@ -1319,7 +1377,7 @@ class CliApp:
                             "rank": rank,
                         }
                     print(
-                        f"[bold green]Loaded {len(self.jpdb_vocab)} words from JPDB.[/bold green]"
+                        f"[bold green]Loaded {len(self.jpdb_vocab)} words from JPDB in {jpdb_elapsed:.2f}s.[/bold green]"
                     )
                 else:
                     print(
@@ -1358,11 +1416,18 @@ class CliApp:
                     print(
                         f"[bold yellow]Warning:[/bold yellow] Synchronization failed. {e}"
                     )
-            else:
-                print(
-                    f"[bold green]Using already synchronized subtitles:[/bold green] {synced_path.name}"
-                )
                 self.subtitle_path = synced_path
+
+        if self.video_path and self.video_path.exists():
+            from .utils import extract_media_package
+            media_base = pathlib.Path(config.media_dir).expanduser()
+            try:
+                pkg_dir = extract_media_package(self.video_path, self.subtitle_path, media_base)
+                print(
+                    f"[bold green]Media package ready in {pkg_dir}. You can now safely delete '{self.video_path.name}' to save space![/bold green]"
+                )
+            except Exception as e:
+                print(f"[bold yellow]Warning:[/bold yellow] Pre-extracting media package failed: {e}")
 
         if not self.subtitle_path.exists():
             print(
@@ -1434,7 +1499,10 @@ class CliApp:
         for cand in candidates:
             if len(first_targets) >= 3:
                 break
-            if not knowledge.is_known(cand.unknown_word):
+            if not (
+                knowledge.is_known(cand.unknown_word)
+                or knowledge.is_ignored(cand.unknown_word)
+            ):
                 _, kana = lookup._get_best_entry_and_kana(
                     cand.unknown_word, getattr(cand, "unknown_word_reading", None)
                 )
@@ -1450,7 +1518,9 @@ class CliApp:
                 )
                 break
 
-            if knowledge.is_known(cand.unknown_word):
+            if knowledge.is_known(cand.unknown_word) or knowledge.is_ignored(
+                cand.unknown_word
+            ):
                 continue
 
             # Prefetch pitch accents for the next 3 unknown words
@@ -1458,7 +1528,10 @@ class CliApp:
             for next_cand in candidates[idx:]:
                 if len(next_targets) >= 3:
                     break
-                if not knowledge.is_known(next_cand.unknown_word):
+                if not (
+                    knowledge.is_known(next_cand.unknown_word)
+                    or knowledge.is_ignored(next_cand.unknown_word)
+                ):
                     _, kana = lookup._get_best_entry_and_kana(
                         next_cand.unknown_word,
                         getattr(next_cand, "unknown_word_reading", None),
@@ -1537,7 +1610,9 @@ class CliApp:
             )
             print()
 
-            choice = await asyncio.to_thread(input, "Mine this card? (y/n/q to quit): ")
+            choice = await asyncio.to_thread(
+                input, "Mine this card? (y/n/i to ignore/q to quit): "
+            )
             choice = choice.strip().lower()
             if choice == "y":
                 added_count = self._mine_candidate(knowledge, cand, kana, definition)
@@ -1545,6 +1620,11 @@ class CliApp:
                 print(
                     f"[bold green]Successfully mined and added {added_count} new known "
                     f"word(s), including '{cand.unknown_word}'.[/bold green]"
+                )
+            elif choice == "i":
+                knowledge.add_ignored(cand.unknown_word)
+                print(
+                    f"[bold yellow]Added '{cand.unknown_word}' to ignored words list.[/bold yellow]"
                 )
             elif choice == "q":
                 print("[bold yellow]Exiting app.[/bold yellow]")
@@ -1558,55 +1638,70 @@ class CliApp:
         definition: str,
     ) -> int:
         words_to_mark_known = [
-            *candidate.known_context_words,
-            candidate.unknown_word,
-        ]
+            w for w in candidate.known_context_words if not knowledge.is_ignored(w)
+        ] + [candidate.unknown_word]
         added_count = knowledge.add_known_words(words_to_mark_known)
 
         audio_path = None
         image_path = None
-        if self.video_path and self.video_path.exists():
-            media_dir = self.subtitle_path.parent / "media"
-            media_dir.mkdir(exist_ok=True)
+        
+        media_dir = (
+            pathlib.Path(config.media_dir).expanduser()
+            if config.media_dir
+            else self.subtitle_path.parent / "media"
+        )
+        media_dir.mkdir(parents=True, exist_ok=True)
 
-            # Parse subtitle timestamp: "00:01:23,456 --> 00:01:25,789"
-            ts = candidate.sentence.timestamp
-            if ts and "-->" in ts:
-                import ffmpeg  # type: ignore[import-untyped]
+        episode_stem = clean_tag_from_path(self.subtitle_path)
+        pkg_dir = media_dir / episode_stem
+        pre_audio_files = list(pkg_dir.glob("audio.*")) if pkg_dir.exists() else []
+        audio_src = pre_audio_files[0] if pre_audio_files else (self.video_path if (self.video_path and self.video_path.exists()) else None)
 
-                start_ts, end_ts = [
-                    t.strip().replace(",", ".") for t in ts.split("-->")
-                ]
+        ts = candidate.sentence.timestamp
+        if ts and "-->" in ts:
+            import ffmpeg  # type: ignore[import-untyped]
+            import shutil
 
-                # Extract audio
-                audio_filename = (
-                    f"{candidate.unknown_word}_{candidate.sentence.index}.mp3"
+            start_ts, end_ts = [
+                t.strip().replace(",", ".") for t in ts.split("-->")
+            ]
+
+            # Extract audio snippet
+            audio_filename = (
+                f"{candidate.unknown_word}_{candidate.sentence.index}.mp3"
+            )
+            audio_path = str(media_dir / audio_filename)
+            if not os.path.exists(audio_path) and audio_src:
+                print(
+                    f"  [bold cyan]->[/bold cyan] Extracting audio to [bold green]{audio_filename}[/bold green] in {media_dir.name}/ folder..."
                 )
-                audio_path = str(media_dir / audio_filename)
-                if not os.path.exists(audio_path):
-                    print(
-                        f"  [bold cyan]->[/bold cyan] Extracting audio to [bold green]{audio_filename}[/bold green] in media/ folder..."
+                try:
+                    (
+                        ffmpeg.input(str(audio_src), ss=start_ts, to=end_ts)
+                        .output(audio_path, acodec="libmp3lame", q=4)
+                        .overwrite_output()
+                        .run(quiet=True)
                     )
-                    try:
-                        (
-                            ffmpeg.input(str(self.video_path), ss=start_ts, to=end_ts)
-                            .output(audio_path, acodec="libmp3lame", q=4, map="0:a:0")
-                            .overwrite_output()
-                            .run(quiet=True)
-                        )
-                    except Exception as e:
-                        print(
-                            f"[bold yellow]Warning:[/bold yellow] Failed to extract audio: {e}"
-                        )
-                        audio_path = None
+                except Exception as e:
+                    print(
+                        f"[bold yellow]Warning:[/bold yellow] Failed to extract audio: {e}"
+                    )
+                    audio_path = None
 
-                # Extract screenshot at midpoint
-                image_filename = (
-                    f"{candidate.unknown_word}_{candidate.sentence.index}.jpg"
-                )
-                image_path = str(media_dir / image_filename)
-                if not os.path.exists(image_path):
-                    # Parse timestamp to seconds
+            # Extract screenshot
+            image_filename = (
+                f"{candidate.unknown_word}_{candidate.sentence.index}.jpg"
+            )
+            image_path = str(media_dir / image_filename)
+            if not os.path.exists(image_path):
+                pre_img = pkg_dir / "screenshots" / f"sub_{candidate.sentence.index:04d}.jpg"
+                if pre_img.exists():
+                    try:
+                        shutil.copy(str(pre_img), image_path)
+                    except Exception as e:
+                        print(f"[bold yellow]Warning:[/bold yellow] Failed to copy pre-extracted screenshot: {e}")
+                        image_path = None
+                elif self.video_path and self.video_path.exists():
                     def ts_to_seconds(t_str: str) -> float:
                         parts = t_str.split(":")
                         if len(parts) == 3:
@@ -1780,6 +1875,11 @@ def run_app(
         "--forget",
         help="Interactively search and remove words from your known words database.",
     ),
+    unignore: bool = typer.Option(
+        False,
+        "--unignore",
+        help="Interactively search and remove words from your ignored words database.",
+    ),
     sync: bool = typer.Option(
         False, "--sync", help="Sync pending local cards to Anki and exit."
     ),
@@ -1790,6 +1890,9 @@ def run_app(
     ),
     history: bool = typer.Option(
         False, "--history", help="Display cards mined per day and exit."
+    ),
+    clear_sessions: bool = typer.Option(
+        False, "--clear-sessions", help="Interactively select and remove past sessions."
     ),
 ) -> None:
     create_db_and_tables()
@@ -1899,6 +2002,7 @@ def run_app(
         create_db_and_tables()
         knowledge = KnowledgeModel()
         count = len(knowledge.known_words)
+        ignored_count = len(knowledge.ignored_words)
 
         sorted_words = sorted(knowledge.known_words)
 
@@ -1907,7 +2011,8 @@ def run_app(
         console.print()
         console.print(
             Panel(
-                f"[bold cyan]You currently know [magenta]{count:,}[/magenta] words! Keep it up! 🚀[/bold cyan]",
+                f"[bold cyan]You currently know [magenta]{count:,}[/magenta] words! Keep it up! 🚀[/bold cyan]\n"
+                f"[bold cyan]Ignored words: [magenta]{ignored_count:,}[/magenta][/bold cyan]",
                 title="[bold yellow]Vocabulary Stats[/bold yellow]",
                 expand=False,
                 padding=(1, 4),
@@ -2013,8 +2118,82 @@ def run_app(
 
                 console.print(Panel(card_table, expand=False))
                 console.print()
-        except KeyboardInterrupt, SystemExit:
+        except (KeyboardInterrupt, SystemExit):
             console.print("\n[bold red]Cancelled.[/bold red]")
+        return
+
+    if clear_sessions:
+        create_db_and_tables()
+        console = Console()
+        with get_session() as session:
+            history_records = session.exec(
+                select(MiningSession).order_by(desc(MiningSession.id))
+            ).all()
+            if not history_records:
+                console.print("\n[bold yellow]No past sessions found.[/bold yellow]\n")
+                return
+
+            console.print()
+            table = Table(
+                title="[bold yellow]Clear Sessions[/bold yellow]",
+                show_header=True,
+                header_style="bold magenta",
+            )
+            table.add_column("No.", justify="right", style="cyan")
+            table.add_column("Subtitle / Episode", style="green")
+            table.add_column("Video File", style="dim")
+
+            for idx, h in enumerate(history_records, 1):
+                sub_path_obj = pathlib.Path(h.subtitle_path) if h.subtitle_path else None
+                if sub_path_obj and sub_path_obj.name.startswith("subtitles."):
+                    sub_name = sub_path_obj.parent.name
+                elif sub_path_obj:
+                    sub_name = sub_path_obj.name
+                else:
+                    sub_name = "Unknown"
+
+                vid_name = (
+                    pathlib.Path(h.video_path).name
+                    if h.video_path and pathlib.Path(h.video_path).exists()
+                    else "None / Media Package"
+                )
+                table.add_row(str(idx), sub_name, vid_name)
+
+            all_idx = len(history_records) + 1
+            table.add_row(str(all_idx), "[bold red]Clear ALL sessions[/bold red]", "")
+            console.print(table)
+            console.print()
+
+            try:
+                choice = IntPrompt.ask(
+                    "Select a session to delete",
+                    choices=[str(i) for i in range(1, all_idx + 1)],
+                )
+                if choice == all_idx:
+                    to_delete = list(history_records)
+                else:
+                    to_delete = [history_records[choice - 1]]
+
+                from rich.prompt import Confirm
+                del_media = Confirm.ask(
+                    "Do you also want to delete extracted media package folders?", default=False
+                )
+                media_base = pathlib.Path(config.media_dir).expanduser()
+
+                import shutil
+                for s in to_delete:
+                    if del_media and s.subtitle_path:
+                        pkg_dir = media_base / clean_tag_from_path(s.subtitle_path)
+                        if pkg_dir.exists():
+                            shutil.rmtree(pkg_dir, ignore_errors=True)
+                            console.print(f"  [dim]Deleted media package: {pkg_dir.name}[/dim]")
+                    session.delete(s)
+                session.commit()
+                console.print(
+                    f"\n[bold green]-> Successfully removed {len(to_delete)} session(s).[/bold green]\n"
+                )
+            except (KeyboardInterrupt, SystemExit):
+                console.print("\n[bold red]Cancelled.[/bold red]")
         return
 
     if forget:
@@ -2185,6 +2364,176 @@ def run_app(
             console.print("\n[bold yellow]No words removed.[/bold yellow]\n")
         return
 
+    if unignore:
+        create_db_and_tables()
+        knowledge = KnowledgeModel()
+        console = Console()
+
+        if not knowledge.ignored_words:
+            console.print(
+                "\n[bold yellow]Your ignored words database is empty.[/bold yellow]\n"
+            )
+            return
+
+        console.print()
+        search = (
+            input("Search word to unignore (press Enter to list all): ").strip().lower()
+        )
+        console.print()
+
+        all_words = sorted(knowledge.ignored_words)
+        matches = [w for w in all_words if search in w.lower()] if search else all_words
+
+        if not matches:
+            console.print(
+                f"[bold red]No ignored words matching '{search}'.[/bold red]\n"
+            )
+            return
+
+        import sys
+        import tty
+        import termios
+        import select as _select
+        import os
+
+        choices = matches
+        cursor = 0
+        scroll_offset = 0
+        selected: Set[int] = set()
+
+        def get_key_unignore() -> Optional[str]:
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                rlist, _, _ = _select.select([sys.stdin], [], [], 0.1)
+                if rlist:
+                    seq = os.read(fd, 10)
+                    if seq in (b"\x1b[A", b"\x1bOA"):
+                        return "up"
+                    elif seq in (b"\x1b[B", b"\x1bOB"):
+                        return "down"
+                    elif seq in (b"\x1b[D", b"\x1bOD"):
+                        return "left"
+                    elif seq in (b"\x1b[C", b"\x1bOC"):
+                        return "right"
+                    elif seq == b" ":
+                        return "space"
+                    elif seq in (b"\r", b"\n"):
+                        return "enter"
+                    elif seq in (b"q", b"Q", b"\x03", b"\x1b"):
+                        return "quit"
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            return None
+
+        def draw_unignore(console: Console) -> None:
+            console.clear()
+            console.print(
+                "[bold red]Unignore Words[/bold red]  [dim](Space = toggle, Enter = confirm, Q = cancel)[/dim]"
+            )
+            console.print()
+
+            table = Table(
+                title=f"[bold red]Select words to REMOVE from ignored database[/bold red] [dim]({len(matches)} matching)[/dim]",
+                show_header=False,
+                show_edge=False,
+                box=None,
+                padding=(0, 2),
+            )
+            num_cols = 2
+            for _ in range(num_cols):
+                table.add_column(justify="left")
+
+            max_visible = 15
+            total_rows = (len(choices) + num_cols - 1) // num_cols
+            start_row = scroll_offset
+            end_row = min(total_rows, scroll_offset + max_visible)
+
+            for r in range(start_row, end_row):
+                row_data = []
+                for c in range(num_cols):
+                    idx = r * num_cols + c
+                    if idx < len(choices):
+                        word = choices[idx]
+                        is_sel = idx in selected
+                        is_cur = idx == cursor
+                        prefix = "[magenta]▶[/magenta]" if is_cur else " "
+                        box = "[[bold red]x[/bold red]]" if is_sel else "[ ]"
+                        style = "bold red" if is_sel else "white"
+                        if is_cur:
+                            style = "bold cyan reverse"
+                        row_data.append(f"{prefix} {box} [{style}]{word}[/{style}]")
+                    else:
+                        row_data.append("")
+                table.add_row(*row_data)
+
+            if scroll_offset > 0:
+                console.print(Text("   ▲  More words above  ▲", style="bold yellow"))
+            console.print(table)
+            if end_row < total_rows:
+                console.print(Text("   ▼  More words below  ▼", style="bold yellow"))
+            console.print()
+            console.print(
+                Text(
+                    f"   {len(selected)} word(s) selected for unignoring",
+                    style="bold red" if selected else "dim",
+                )
+            )
+
+        sys.stdout.write("\x1b[?25l")
+        sys.stdout.flush()
+        try:
+            draw_unignore(console)
+            while True:
+                key = get_key_unignore()
+                if key == "quit":
+                    selected.clear()
+                    break
+                elif key == "enter":
+                    break
+                elif key == "space":
+                    if cursor in selected:
+                        selected.remove(cursor)
+                    else:
+                        selected.add(cursor)
+                    draw_unignore(console)
+                elif key in ("up", "down", "left", "right"):
+                    if key == "up":
+                        cursor = max(0, cursor - 2)
+                    elif key == "down":
+                        cursor = min(len(choices) - 1, cursor + 2)
+                    elif key == "left":
+                        cursor = max(0, cursor - 1)
+                    elif key == "right":
+                        cursor = min(len(choices) - 1, cursor + 1)
+                    max_visible = 15
+                    cursor_row = cursor // 2
+                    if cursor_row < scroll_offset:
+                        scroll_offset = cursor_row
+                    elif cursor_row >= scroll_offset + max_visible:
+                        scroll_offset = cursor_row - max_visible + 1
+                    draw_unignore(console)
+        except KeyboardInterrupt, SystemExit:
+            selected.clear()
+        finally:
+            sys.stdout.write("\x1b[?25h")
+            sys.stdout.flush()
+            console.clear()
+
+        if selected:
+            words_to_remove = [choices[i] for i in selected]
+            removed = knowledge.remove_ignored_words(words_to_remove)
+            console.print(
+                f"\n[bold red]Removed {removed} word(s) from your ignored database:[/bold red]"
+            )
+            for w in words_to_remove:
+                console.print(f"  [dim]- {w}[/dim]")
+            console.print()
+        else:
+            console.print("\n[bold yellow]No words unignored.[/bold yellow]\n")
+        return
+
     subtitle_path = ""
     video_path = ""
 
@@ -2199,15 +2548,39 @@ def run_app(
             for h in db_history
         ]
 
+    media_base = pathlib.Path(config.media_dir).expanduser()
     valid_sessions: List[Dict[str, Any]] = []
     invalid_found = False
     for sess in sess_history:
         sub = sess.get("subtitle_path")
         vid = sess.get("video_path")
-        sub_exists = sub and pathlib.Path(sub).exists()
-        vid_exists = not vid or pathlib.Path(vid).exists()
+        sub_path = pathlib.Path(sub) if sub else None
+        sub_exists = bool(sub_path and sub_path.exists())
+
+        pkg_has_audio = False
+        pkg_sub_path = None
+        if sub:
+            pkg_dir = media_base / clean_tag_from_path(sub)
+            if pkg_dir.exists():
+                has_audio = len(list(pkg_dir.glob("audio.*"))) > 0
+                has_imgs = (pkg_dir / "screenshots").exists() and len(list((pkg_dir / "screenshots").glob("*.jpg"))) > 0
+                pkg_has_audio = has_audio and has_imgs
+                for ext in [".srt", ".ass", ".ssa"]:
+                    candidate_subs = list(pkg_dir.glob(f"*{ext}"))
+                    if candidate_subs:
+                        pkg_sub_path = str(candidate_subs[0])
+                        break
+
+        if not sub_exists and pkg_sub_path:
+            sub = pkg_sub_path
+            sub_exists = True
+
+        vid_exists = not vid or (vid and pathlib.Path(vid).exists()) or pkg_has_audio
         if sub_exists and vid_exists:
-            valid_sessions.append(sess)
+            sess_copy = dict(sess)
+            sess_copy["subtitle_path"] = sub
+            sess_copy["pkg_has_audio"] = pkg_has_audio
+            valid_sessions.append(sess_copy)
         else:
             invalid_found = True
 
@@ -2230,12 +2603,23 @@ def run_app(
         table.add_column("Video File", style="dim")
 
         for idx, sess in enumerate(valid_sessions, 1):
-            sub_name = pathlib.Path(sess["subtitle_path"]).name
-            vid_name = (
-                pathlib.Path(sess["video_path"]).name
-                if sess.get("video_path")
-                else "None"
-            )
+            sub_path_obj = pathlib.Path(sess["subtitle_path"])
+            if sub_path_obj.name.startswith("subtitles."):
+                sub_name = sub_path_obj.parent.name
+            else:
+                sub_name = sub_path_obj.name
+
+            has_vid = bool(sess.get("video_path") and pathlib.Path(sess["video_path"]).exists())
+            has_pkg = bool(sess.get("pkg_has_audio"))
+
+            if has_pkg and has_vid:
+                vid_name = f"[green]Self-Contained[/green] ({pathlib.Path(sess['video_path']).name})"
+            elif has_pkg:
+                vid_name = "[bold green]Self-Contained[/bold green] (Package Only)"
+            elif has_vid:
+                vid_name = pathlib.Path(sess["video_path"]).name
+            else:
+                vid_name = "None"
             table.add_row(str(idx), sub_name, vid_name)
 
         new_sess_num = len(valid_sessions) + 1
@@ -2274,65 +2658,138 @@ def run_app(
             return
 
     if not loaded_session:
+        console = Console()
+        console.print("\n[bold yellow]Subtitle Source Selection[/bold yellow]")
+        console.print("1. Select a [cyan]local[/cyan] subtitle file")
+        console.print("2. Search and download from [cyan]online[/cyan] (subtitles.ajatt.top)")
+        console.print()
+
         try:
-            from PyQt5.QtWidgets import QApplication, QFileDialog
-
-            app = QApplication.instance()
-            if not app:
-                app = QApplication([])
-
-            print("Please select a subtitle file (.srt, .ass, .ssa)...")
-            subtitle_path, _ = QFileDialog.getOpenFileName(
-                None,
-                "Select Subtitle File",
-                "",
-                "Subtitle Files (*.srt *.ass *.ssa);;All Files (*)",
+            source_choice = IntPrompt.ask(
+                "Select option",
+                choices=["1", "2"],
+                default=1,
             )
+        except (KeyboardInterrupt, SystemExit):
+            print("\n[bold red]Operation cancelled.[/bold red]")
+            return
 
-            if not subtitle_path:
-                print("No subtitle file selected. Exiting.")
+        if source_choice == 2:
+            from src.subtitle_downloader import SubtitleDownloader
+
+            downloader = SubtitleDownloader()
+            downloaded_path = downloader.run()
+            if not downloaded_path:
+                print("No subtitle downloaded. Exiting.")
                 return
+            subtitle_path = str(downloaded_path)
 
-            print(
-                "Please select a video file (optional) for sync & audio extraction..."
-            )
-            video_path, _ = QFileDialog.getOpenFileName(
-                None,
-                "Select Video File (Cancel to skip)",
-                "",
-                "Video Files (*.mkv *.mp4 *.avi);;All Files (*)",
-            )
+            # Prompt for optional video file
+            try:
+                from PyQt5.QtWidgets import QApplication, QFileDialog
 
-        except Exception as e:
-            print(
-                f"PyQt5 dialog failed or not available, falling back to Tkinter. Error: {e}"
-            )
-            import tkinter as tk
-            from tkinter import filedialog
+                app = QApplication.instance()
+                if not app:
+                    app = QApplication([])
 
-            root = tk.Tk()
-            root.withdraw()  # Hide the main window
+                print(
+                    "Please select a video file (optional) for sync & audio extraction..."
+                )
+                video_path, _ = QFileDialog.getOpenFileName(
+                    None,
+                    "Select Video File (Cancel to skip)",
+                    "",
+                    "Video Files (*.mkv *.mp4 *.avi);;All Files (*)",
+                )
+            except Exception as e:
+                print(
+                    f"PyQt5 dialog failed or not available, falling back to Tkinter. Error: {e}"
+                )
+                import tkinter as tk
+                from tkinter import filedialog
 
-            print("Please select a subtitle file (.srt, .ass, .ssa)...")
-            subtitle_path = filedialog.askopenfilename(
-                title="Select Subtitle File",
-                filetypes=[
-                    ("Subtitle Files", "*.srt *.ass *.ssa"),
-                    ("All Files", "*.*"),
-                ],
-            )
+                root = tk.Tk()
+                root.withdraw()
 
-            if not subtitle_path:
-                print("No subtitle file selected. Exiting.")
-                return
+                print(
+                    "Please select a video file (optional) for sync & audio extraction..."
+                )
+                video_path = filedialog.askopenfilename(
+                    title="Select Video File (Cancel to skip)",
+                    filetypes=[
+                        ("Video Files", "*.mkv *.mp4 *.avi"),
+                        ("All Files", "*.*"),
+                    ],
+                )
+        else:
+            try:
+                from PyQt5.QtWidgets import QApplication, QFileDialog
 
-            print(
-                "Please select a video file (optional) for sync & audio extraction..."
-            )
-            video_path = filedialog.askopenfilename(
-                title="Select Video File (Cancel to skip)",
-                filetypes=[("Video Files", "*.mkv *.mp4 *.avi"), ("All Files", "*.*")],
-            )
+                app = QApplication.instance()
+                if not app:
+                    app = QApplication([])
+
+                print("Please select a subtitle file (.srt, .ass, .ssa)...")
+                subtitle_path, _ = QFileDialog.getOpenFileName(
+                    None,
+                    "Select Subtitle File",
+                    "",
+                    "Subtitle Files (*.srt *.ass *.ssa);;All Files (*)",
+                )
+
+                if not subtitle_path:
+                    print("No subtitle file selected. Exiting.")
+                    return
+
+                print(
+                    "Please select a video file (optional) for sync & audio extraction..."
+                )
+                video_path, _ = QFileDialog.getOpenFileName(
+                    None,
+                    "Select Video File (Cancel to skip)",
+                    "",
+                    "Video Files (*.mkv *.mp4 *.avi);;All Files (*)",
+                )
+
+            except Exception as e:
+                print(
+                    f"PyQt5 dialog failed or not available, falling back to Tkinter. Error: {e}"
+                )
+                import tkinter as tk
+                from tkinter import filedialog
+
+                root = tk.Tk()
+                root.withdraw()  # Hide the main window
+
+                print("Please select a subtitle file (.srt, .ass, .ssa)...")
+                subtitle_path = filedialog.askopenfilename(
+                    title="Select Subtitle File",
+                    filetypes=[
+                        ("Subtitle Files", "*.srt *.ass *.ssa"),
+                        ("All Files", "*.*"),
+                    ],
+                )
+
+                if not subtitle_path:
+                    print("No subtitle file selected. Exiting.")
+                    return
+
+                # Check if pre-extracted media package exists
+                pkg_dir = media_base / clean_tag_from_path(subtitle_path)
+                if pkg_dir.exists() and len(list(pkg_dir.glob("audio.*"))) > 0:
+                    print("[bold green]Found pre-extracted media package in ~/.nihongo-miner/media/. Skipping video prompt.[/bold green]")
+                    video_path = ""
+                else:
+                    print(
+                        "Please select a video file (optional) for sync & audio extraction..."
+                    )
+                    video_path = filedialog.askopenfilename(
+                        title="Select Video File (Cancel to skip)",
+                        filetypes=[
+                            ("Video Files", "*.mkv *.mp4 *.avi"),
+                            ("All Files", "*.*"),
+                        ],
+                    )
 
         # Save session history
         if subtitle_path:

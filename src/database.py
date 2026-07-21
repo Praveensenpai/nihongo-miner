@@ -1,6 +1,5 @@
 from datetime import datetime
 import pathlib
-import sys
 from typing import Optional
 from sqlmodel import Field, SQLModel, create_engine, Session, text
 
@@ -14,6 +13,13 @@ class KnownWord(SQLModel, table=True):
 
 class SkippedWord(SQLModel, table=True):
     """Words the user skipped to be moved to the back of the queue."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    word: str = Field(index=True, unique=True)
+
+
+class IgnoredWord(SQLModel, table=True):
+    """Words the user wants to ignore."""
 
     id: Optional[int] = Field(default=None, primary_key=True)
     word: str = Field(index=True, unique=True)
@@ -63,19 +69,9 @@ class PitchAccentCache(SQLModel, table=True):
     pitch: str
 
 
-DB_FILE = (
-    pathlib.Path.home() / "AppData" / "Local" / "nihongo-miner" / "data.db"
-    if sys.platform == "win32"
-    else (
-        pathlib.Path.home()
-        / "Library"
-        / "Application Support"
-        / "nihongo-miner"
-        / "data.db"
-        if sys.platform == "darwin"
-        else pathlib.Path.home() / ".local" / "share" / "nihongo-miner" / "data.db"
-    )
-)
+from src.config import CONFIG_DIR
+
+DB_FILE = CONFIG_DIR / "data.db"
 sqlite_url = f"sqlite:///{DB_FILE.absolute()}"
 
 engine = create_engine(sqlite_url, echo=False)
